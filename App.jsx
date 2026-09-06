@@ -419,9 +419,10 @@ function PlanScreen({ countries, setCountries, cities, setCities, notes, setNote
   const removeCity = (country, id) =>
     setCities(p => ({ ...p, [country]: p[country].filter(c => c.id !== id) }));
 
+  const [newCity, setNewCity] = useState("");
+
   if (view !== "overview" && activeC) {
     const plannedDays = (cities[activeC.name] || []).reduce((s, c) => s + c.days, 0);
-    const [newCity, setNewCity] = useState("");
     return (
       <div style={{ padding: "16px 14px", overflowY: "auto", height: "calc(100vh - 108px)", boxSizing: "border-box" }}>
         <button onClick={() => setView("overview")} style={{ background: "none", border: "none", color: T.primary, cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 14, marginBottom: 14, display: "flex", alignItems: "center", gap: 6, padding: 0 }}>
