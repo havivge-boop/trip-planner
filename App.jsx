@@ -1,4 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+
+// Fix default marker icons for Vite
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+});
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -129,7 +139,7 @@ function MapScreen({ countries, pins, onPinsChange, tracks, onTracksChange }) {
   const mapInst = useRef(null);
   const customMarkers = useRef([]);
   const trackLines = useRef([]);
-  const [ready, setReady] = useState(!!window.L);
+  const [ready, setReady] = useState(true);
   const [clickMode, setClickMode] = useState(false);
   const [pending, setPending] = useState(null);
   const [form, setForm] = useState({ name: "", note: "", cat: "attraction" });
@@ -138,26 +148,15 @@ function MapScreen({ countries, pins, onPinsChange, tracks, onTracksChange }) {
   const [gpxLoading, setGpxLoading] = useState(false);
   const gpxInputRef = useRef(null);
 
-  // Load Leaflet dynamically
-  useEffect(() => {
-    if (window.L) { setReady(true); return; }
-    const css = document.createElement("link");
-    css.rel = "stylesheet";
-    css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    document.head.appendChild(css);
-    const js = document.createElement("script");
-    js.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    js.onload = () => setReady(true);
-    document.head.appendChild(js);
-  }, []);
+  // Leaflet is now bundled - always ready
+  useEffect(() => { setReady(true); }, []);
 
   // Init map
   useEffect(() => {
     if (!ready || mapInst.current || !mapRef.current) return;
-    const L = window.L;
     const map = L.map(mapRef.current).setView([50, 13], 4);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap", maxZoom: 19,
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+      attribution: "© OpenStreetMap © CARTO", maxZoom: 20,
     }).addTo(map);
 
     // Route line
@@ -199,8 +198,7 @@ function MapScreen({ countries, pins, onPinsChange, tracks, onTracksChange }) {
 
   // Render pins
   useEffect(() => {
-    if (!mapInst.current || !window.L) return;
-    const L = window.L;
+    if (!mapInst.current) return;
     customMarkers.current.forEach(m => mapInst.current.removeLayer(m));
     customMarkers.current = [];
     const filtered = filterCat === "all" ? pins : pins.filter(p => p.cat === filterCat);
@@ -219,8 +217,7 @@ function MapScreen({ countries, pins, onPinsChange, tracks, onTracksChange }) {
 
   // Render GPX tracks
   useEffect(() => {
-    if (!mapInst.current || !window.L) return;
-    const L = window.L;
+    if (!mapInst.current) return;
     trackLines.current.forEach(l => mapInst.current.removeLayer(l));
     trackLines.current = [];
     tracks.forEach(trk => {
@@ -258,7 +255,7 @@ function MapScreen({ countries, pins, onPinsChange, tracks, onTracksChange }) {
       if (track) {
         onTracksChange([...tracks, track]);
         if (mapInst.current && window.L) {
-          mapInst.current.fitBounds(window.L.polyline(track.points).getBounds(), { padding: [20, 20] });
+          mapInst.current.fitBounds(L.polyline(track.points).getBounds(), { padding: [20, 20] });
         }
       }
       setGpxLoading(false);
@@ -285,12 +282,7 @@ function MapScreen({ countries, pins, onPinsChange, tracks, onTracksChange }) {
 
       {/* Map */}
       <div ref={mapRef} style={{ flex: 1, background: T.faint }}>
-        {!ready && (
-          <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: T.muted, flexDirection: "column", gap: 8 }}>
-            <div style={{ fontSize: 32 }}>🗺️</div>
-            <div style={{ fontSize: 14 }}>טוען מפה...</div>
-          </div>
-        )}
+
       </div>
 
       {/* FABs */}
