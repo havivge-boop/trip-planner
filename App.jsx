@@ -13,7 +13,6 @@ L.Icon.Default.mergeOptions({
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
 const TRIP_START = new Date("2027-04-29");
-const TRIP_WEEKS = 20;
 
 const COUNTRIES = [
   { name: "בולגריה", emoji: "🇧🇬", weeks: 1, color: "#f97316", lat: 42.7, lng: 25.5 },
@@ -496,7 +495,7 @@ function PlanScreen({ countries, setCountries, cities, setCities, notes, setNote
   }
 
   // Overview
-  const weeksColor = totalWeeks === TRIP_WEEKS ? "#10b981" : totalWeeks > TRIP_WEEKS ? "#ef4444" : "#f59e0b";
+  const weeksColor = T.primary;
   return (
     <div style={{ padding: "16px 14px", overflowY: "auto", height: "calc(100vh - 108px)", boxSizing: "border-box" }}>
       {/* Weeks summary */}
@@ -504,7 +503,7 @@ function PlanScreen({ countries, setCountries, cities, setCities, notes, setNote
         <div style={{ fontSize: 38, fontWeight: 900, color: weeksColor, lineHeight: 1 }}>{totalWeeks}</div>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15, color: T.text }}>
-            {totalWeeks === TRIP_WEEKS ? "✓ בדיוק 20 שבועות" : totalWeeks > TRIP_WEEKS ? `⚠️ ${totalWeeks - TRIP_WEEKS} שבועות יותר` : `${TRIP_WEEKS - totalWeeks} שבועות פנויים`}
+            שבועות בסך הכל
           </div>
           <div style={{ fontSize: 12, color: T.muted, marginTop: 2 }}>{fmt(TRIP_START)} → {fmt(dates[dates.length - 1].end)}</div>
         </div>
@@ -909,7 +908,7 @@ export default function TripPlanner() {
       <div style={{ background: T.navBg, borderBottom: `1px solid ${T.surfaceBorder}`, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 900, fontSize: 18, color: T.text, lineHeight: 1 }}>הטיול הגדול 🌍</div>
-          <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>12 מדינות · 20 שבועות · 2 חברים</div>
+          <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{countries.length} מדינות · {countries.reduce((s, c) => s + c.weeks, 0)} שבועות · 2 חברים</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <div style={{ textAlign: "left" }}>
