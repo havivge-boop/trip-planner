@@ -189,6 +189,7 @@ select option { background: #121829; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .enter-left  { animation: inFromLeft  .34s cubic-bezier(.2,.8,.2,1) backwards; }
 .enter-right { animation: inFromRight .34s cubic-bezier(.2,.8,.2,1) backwards; }
+.map-in { animation: fadeIn .3s ease backwards; }
 .fade-up { animation: fadeUp .3s cubic-bezier(.2,.8,.2,1) backwards; }
 .leaflet-container { background: #0e1322; font-family: 'Heebo', sans-serif; }
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { border-radius: 14px; }
@@ -232,256 +233,368 @@ function Segmented({ options, value, onChange, size = 15 }) {
 
 // ─── MAP SCREEN ───────────────────────────────────────────────────────────────
 
-function MapScreen({ countries, pins, onPinsChange, tracks, onTracksChange }) {
+const COUNTRY_CODES = { בולגריה: "bg", יוון: "gr", אלבניה: "al", מונטנגרו: "me", קרואטיה: "hr", סלובניה: "si", אוסטריה: "at", איטליה: "it", שוויץ: "ch", נורווגיה: "no", שוודיה: "se", דנמרק: "dk" };
+
+const TILE_STYLES = {
+  dark:  { url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", label: "🌙" },
+  light: { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", label: "☀️" },
+};
+
+// Free place search (OpenStreetMap Nominatim). Max ~1 request per second.
+async function geoSearch(q, cc, limit = 6) {
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=${limit}&accept-language=he,en&q=${encodeURIComponent(q)}${cc ? `&countrycodes=${cc}` : ""}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("geo " + r.status);
+  return (await r.json()).map(x => ({ lat: parseFloat(x.lat), lng: parseFloat(x.lon), name: x.name || x.display_name.split(",")[0], full: x.display_name }));
+}
+
+const distKm = (a, b) => {
+  const R = 6371, toR = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toR, dLng = (b.lng - a.lng) * toR;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toR) * Math.cos(b.lat * toR) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
+
+// Trip stops: the cities from the plan tab (once located), or the country itself if it has none yet.
+function buildStops(countries, cities) {
+  const dates = getDates(countries);
+  const stops = [];
+  countries.forEach((c, i) => {
+    const list = cities[c.name] || [];
+    const located = list.filter(x => x.lat != null);
+    if (!located.length) {
+      stops.push({ key: c.name, country: c, name: c.name, lat: c.lat, lng: c.lng, start: dates[i].start, end: dates[i].end, days: Math.round(c.weeks * 7), isCountry: true });
+      return;
+    }
+    let d = new Date(dates[i].start);
+    list.forEach(city => {
+      const st = new Date(d);
+      d.setDate(d.getDate() + (city.days || 1));
+      if (city.lat != null) stops.push({ key: `${c.name}-${city.id}`, country: c, name: city.name, lat: city.lat, lng: city.lng, start: st, end: new Date(d.getTime() - 86400000), days: city.days, accommodation: city.accommodation, notes: city.notes });
+    });
+  });
+  return stops;
+}
+
+function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, tracks, onTracksChange, compares }) {
   const mapRef = useRef(null);
   const mapInst = useRef(null);
-  const customMarkers = useRef([]);
-  const trackLines = useRef([]);
-  const [ready, setReady] = useState(true);
-  const [clickMode, setClickMode] = useState(false);
-  const [pending, setPending] = useState(null);
-  const [form, setForm] = useState({ name: "", note: "", cat: "attraction" });
-  const [filterCat, setFilterCat] = useState("all");
-  const [showList, setShowList] = useState(false);
-  const [gpxLoading, setGpxLoading] = useState(false);
+  const tileLayer = useRef(null);
+  const layers = useRef({ route: [], stops: [], pins: [], tracks: [] });
+  const cardsRef = useRef(null);
+  const addModeRef = useRef(false);
   const gpxInputRef = useRef(null);
 
-  // Leaflet is now bundled - always ready
-  useEffect(() => { setReady(true); }, []);
+  const [style, setStyle] = useState(() => { try { return localStorage.getItem("trip-map-style") || "dark"; } catch { return "dark"; } });
+  const [active, setActive] = useState(-1); // -1 = whole trip
+  const [addMode, setAddMode] = useState(false);
+  const [pending, setPending] = useState(null); // {lat, lng, name?}
+  const [form, setForm] = useState({ name: "", note: "", cat: "attraction" });
+  const [hiddenCats, setHiddenCats] = useState({});
+  const [showLayers, setShowLayers] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [geoQueue, setGeoQueue] = useState(0);
+  const [geoTick, setGeoTick] = useState(0);
 
-  // Init map
+  const stops = buildStops(countries, cities);
+  const stopsSig = stops.map(s => `${s.key}:${s.lat},${s.lng}`).join("|");
+  addModeRef.current = addMode;
+
+  // Create the map once and keep it alive (it stays mounted while other tabs are open).
   useEffect(() => {
-    if (!ready || mapInst.current || !mapRef.current) return;
-    const map = L.map(mapRef.current).setView([50, 13], 4);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-      attribution: "© OpenStreetMap © CARTO", maxZoom: 20,
-    }).addTo(map);
-
-    // Route line
-    L.polyline(countries.map(c => [c.lat, c.lng]), {
-      color: T.primary, weight: 2, opacity: 0.5, dashArray: "8,6",
-    }).addTo(map);
-
-    // Country markers
-    countries.forEach((c, i) => {
-      const icon = L.divIcon({
-        className: "",
-        html: `<div style="background:${c.color};color:#fff;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:18px;border:2px solid rgba(255,255,255,0.8);box-shadow:0 2px 10px rgba(0,0,0,0.5);">${c.emoji}</div>`,
-        iconSize: [36, 36], iconAnchor: [18, 18],
-      });
-      L.marker([c.lat, c.lng], { icon }).addTo(map)
-        .bindPopup(`<div style="font-family:sans-serif;direction:rtl;min-width:120px;"><b>${c.emoji} ${c.name}</b><br/>${c.weeks} שבועות</div>`);
-    });
-
+    const map = L.map(mapRef.current, { zoomControl: false, attributionControl: true, worldCopyJump: true }).setView([48, 14], 4);
+    map.attributionControl.setPrefix(false);
     map.on("click", e => {
-      if (!clickMode) return;
-      setPending(e.latlng);
+      if (!addModeRef.current) return;
+      setPending({ lat: e.latlng.lat, lng: e.latlng.lng });
       setForm({ name: "", note: "", cat: "attraction" });
     });
-
     mapInst.current = map;
     return () => { map.remove(); mapInst.current = null; };
-  }, [ready]);
+  }, []);
 
-  // Update click mode listener
+  // Tiles
   useEffect(() => {
-    if (!mapInst.current) return;
-    mapInst.current.off("click");
-    mapInst.current.on("click", e => {
-      if (!clickMode) return;
-      setPending(e.latlng);
-      setForm({ name: "", note: "", cat: "attraction" });
+    const map = mapInst.current;
+    if (tileLayer.current) map.removeLayer(tileLayer.current);
+    tileLayer.current = L.tileLayer(TILE_STYLES[style].url, { attribution: "© OpenStreetMap © CARTO", maxZoom: 19, keepBuffer: 4, updateWhenIdle: false }).addTo(map);
+    try { localStorage.setItem("trip-map-style", style); } catch {}
+  }, [style]);
+
+  // Map was hidden – fix its size when shown
+  useEffect(() => { if (visible && mapInst.current) setTimeout(() => mapInst.current?.invalidateSize(), 50); }, [visible]);
+
+  const clear = key => { layers.current[key].forEach(l => mapInst.current.removeLayer(l)); layers.current[key] = []; };
+
+  // Route + numbered stops
+  useEffect(() => {
+    const map = mapInst.current;
+    clear("route"); clear("stops");
+    const pts = stops.map(s => [s.lat, s.lng]);
+    if (pts.length > 1) {
+      layers.current.route.push(L.polyline(pts, { color: "#7c5cff", weight: 10, opacity: 0.18, lineCap: "round", lineJoin: "round", interactive: false }).addTo(map));
+      layers.current.route.push(L.polyline(pts, { color: "#5b8cff", weight: 3, opacity: 0.95, lineCap: "round", lineJoin: "round", interactive: false }).addTo(map));
+    }
+    stops.forEach((s, i) => {
+      const on = i === active;
+      const size = on ? 34 : 24;
+      const icon = L.divIcon({
+        className: "",
+        html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${s.country.color};color:#fff;display:flex;align-items:center;justify-content:center;font:800 ${on ? 14 : 11}px Heebo,sans-serif;border:2px solid #fff;box-shadow:0 0 0 ${on ? 6 : 0}px ${s.country.color}55,0 3px 10px rgba(0,0,0,.5);transition:all .3s">${i + 1}</div>`,
+        iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+      });
+      const m = L.marker([s.lat, s.lng], { icon, zIndexOffset: on ? 1000 : 500 }).addTo(map);
+      m.on("click", () => selectStop(i, true));
+      layers.current.stops.push(m);
     });
-  }, [clickMode]);
+  }, [stopsSig, active]);
 
-  // Render pins
+  // My pins
   useEffect(() => {
-    if (!mapInst.current) return;
-    customMarkers.current.forEach(m => mapInst.current.removeLayer(m));
-    customMarkers.current = [];
-    const filtered = filterCat === "all" ? pins : pins.filter(p => p.cat === filterCat);
-    filtered.forEach(pin => {
+    clear("pins");
+    pins.filter(p => !hiddenCats[p.cat]).forEach(pin => {
       const cat = PIN_CATS.find(c => c.id === pin.cat) || PIN_CATS[5];
       const icon = L.divIcon({
         className: "",
-        html: `<div style="background:${cat.color};color:#fff;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:15px;border:2px solid rgba(255,255,255,0.8);box-shadow:0 2px 8px rgba(0,0,0,0.5);">${cat.icon}</div>`,
-        iconSize: [30, 30], iconAnchor: [15, 15],
+        html: `<div style="background:${cat.color};border-radius:50% 50% 50% 0;transform:rotate(-45deg);width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.9);box-shadow:0 3px 10px rgba(0,0,0,.5)"><span style="transform:rotate(45deg);font-size:14px">${cat.icon}</span></div>`,
+        iconSize: [28, 28], iconAnchor: [14, 28], popupAnchor: [0, -26],
       });
-      const m = L.marker([pin.lat, pin.lng], { icon }).addTo(mapInst.current);
-      m.bindPopup(`<div style="font-family:sans-serif;direction:rtl"><b>${cat.icon} ${pin.name}</b>${pin.note ? `<br/><small style="color:#666">${pin.note}</small>` : ""}</div>`);
-      customMarkers.current.push(m);
+      const esc = t => String(t).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+      const gmaps = `https://www.google.com/maps/search/?api=1&query=${pin.lat},${pin.lng}`;
+      const m = L.marker([pin.lat, pin.lng], { icon }).addTo(mapInst.current)
+        .bindPopup(`<div style="font-family:Heebo,sans-serif;direction:rtl;min-width:140px"><b>${cat.icon} ${esc(pin.name)}</b>${pin.note ? `<br/><span style="color:#666">${esc(pin.note)}</span>` : ""}<br/><a href="${gmaps}" target="_blank" rel="noreferrer">פתח בגוגל מפות ↗</a></div>`);
+      layers.current.pins.push(m);
     });
-  }, [pins, filterCat, ready]);
+  }, [pins, hiddenCats]);
 
-  // Render GPX tracks
+  // GPX tracks
   useEffect(() => {
-    if (!mapInst.current) return;
-    trackLines.current.forEach(l => mapInst.current.removeLayer(l));
-    trackLines.current = [];
+    clear("tracks");
     tracks.forEach(trk => {
       if (!trk.points?.length) return;
-      const line = L.polyline(trk.points, { color: trk.color || T.accent, weight: 3, opacity: 0.85 }).addTo(mapInst.current);
-      line.bindPopup(`<b>${trk.name}</b>`);
-      trackLines.current.push(line);
+      layers.current.tracks.push(L.polyline(trk.points, { color: trk.color || T.accent, weight: 4, opacity: 0.9 }).addTo(mapInst.current).bindPopup(`<b>${trk.name}</b>`));
     });
-  }, [tracks, ready]);
+  }, [tracks]);
+
+  // Find coordinates for cities typed in the plan tab (only while the map is open).
+  const geoBusy = useRef(false);
+  useEffect(() => {
+    if (!visible || geoBusy.current) return;
+    const todo = [];
+    Object.entries(cities).forEach(([country, list]) => (list || []).forEach(city => {
+      const name = (city.name || "").trim();
+      if (name && city.geoName !== name && city.geoFail !== name) todo.push({ country, id: city.id, name });
+    }));
+    setGeoQueue(todo.length);
+    if (!todo.length) return;
+    geoBusy.current = true;
+    (async () => {
+      for (const t of todo) {
+        let res = null;
+        try { res = (await geoSearch(t.name, COUNTRY_CODES[t.country], 1))[0] || null; } catch {}
+        setCities(p => ({ ...p, [t.country]: (p[t.country] || []).map(c => c.id === t.id && (c.name || "").trim() === t.name
+          ? (res ? { ...c, lat: res.lat, lng: res.lng, geoName: t.name, geoFail: undefined } : { ...c, geoFail: t.name })
+          : c) }));
+        setGeoQueue(q => Math.max(0, q - 1));
+        await new Promise(r => setTimeout(r, 1100));
+      }
+      geoBusy.current = false;
+      setGeoTick(t => t + 1);
+    })();
+  }, [visible, cities, geoTick]);
+
+  const fitAll = () => {
+    if (!stops.length) return;
+    mapInst.current.flyToBounds(L.latLngBounds(stops.map(s => [s.lat, s.lng])), { paddingTopLeft: [30, 80], paddingBottomRight: [30, 200], duration: 0.8 });
+  };
+  const selectStop = (i, scrollCard) => {
+    setActive(i);
+    if (i < 0) fitAll();
+    else {
+      const s = stops[i];
+      mapInst.current.flyToBounds(L.latLng(s.lat, s.lng).toBounds(s.isCountry ? 350000 : 12000), { paddingTopLeft: [20, 80], paddingBottomRight: [20, 200], duration: 0.9 });
+    }
+    if (scrollCard) cardsRef.current?.children[i + 1]?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  };
+
+  // First open: show the whole trip
+  const didFit = useRef(false);
+  useEffect(() => { if (visible && !didFit.current && stops.length) { didFit.current = true; setTimeout(fitAll, 120); } }, [visible]);
+
+  // Swiping the cards moves the map
+  const scrollTimer = useRef(null);
+  const onCardsScroll = () => {
+    clearTimeout(scrollTimer.current);
+    scrollTimer.current = setTimeout(() => {
+      const box = cardsRef.current;
+      if (!box) return;
+      const mid = box.getBoundingClientRect().left + box.clientWidth / 2;
+      let best = 0, bestD = Infinity;
+      [...box.children].forEach((el, k) => { const r = el.getBoundingClientRect(); const d = Math.abs(r.left + r.width / 2 - mid); if (d < bestD) { bestD = d; best = k; } });
+      if (best - 1 !== active) selectStop(best - 1, false);
+    }, 140);
+  };
+
+  const doSearch = async () => {
+    if (!query.trim()) return;
+    setSearching(true);
+    try { setResults(await geoSearch(query.trim())); } catch { setResults([]); }
+    setSearching(false);
+  };
+  const pickResult = r => {
+    setResults(null);
+    mapInst.current.flyTo([r.lat, r.lng], 14, { duration: 0.9 });
+    setPending({ lat: r.lat, lng: r.lng });
+    setForm({ name: r.name, note: "", cat: "attraction" });
+  };
 
   const savePin = () => {
     if (!form.name.trim() || !pending) return;
     onPinsChange([...pins, { id: Date.now(), name: form.name.trim(), note: form.note.trim(), cat: form.cat, lat: pending.lat, lng: pending.lng }]);
-    setPending(null); setClickMode(false);
-  };
-
-  const parseGPX = (text, filename) => {
-    const xml = new DOMParser().parseFromString(text, "text/xml");
-    const nameEl = xml.querySelector("metadata > name, trk > name");
-    const name = nameEl?.textContent || filename.replace(".gpx", "");
-    const pts = Array.from(xml.querySelectorAll("trkpt")).map(pt => [
-      parseFloat(pt.getAttribute("lat")), parseFloat(pt.getAttribute("lon")),
-    ]);
-    if (pts.length < 2) return null;
-    return { id: Date.now(), name, color: T.accent, points: pts };
+    setPending(null); setAddMode(false); setQuery("");
   };
 
   const handleGPX = e => {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
-    setGpxLoading(true);
     const reader = new FileReader();
     reader.onload = ev => {
-      const track = parseGPX(ev.target.result, file.name);
-      if (track) {
-        onTracksChange([...tracks, track]);
-        if (mapInst.current && window.L) {
-          mapInst.current.fitBounds(L.polyline(track.points).getBounds(), { padding: [20, 20] });
-        }
-      }
-      setGpxLoading(false);
+      const xml = new DOMParser().parseFromString(ev.target.result, "text/xml");
+      const name = xml.querySelector("metadata > name, trk > name")?.textContent || file.name.replace(/\.gpx$/i, "");
+      const pts = Array.from(xml.querySelectorAll("trkpt, rtept")).map(pt => [parseFloat(pt.getAttribute("lat")), parseFloat(pt.getAttribute("lon"))]);
+      if (pts.length < 2) { alert("לא מצאתי מסלול בקובץ"); return; }
+      onTracksChange([...tracks, { id: Date.now(), name, color: T.accent, points: pts }]);
+      setShowLayers(false);
+      mapInst.current.flyToBounds(L.polyline(pts).getBounds(), { padding: [30, 30], duration: 0.8 });
     };
     reader.readAsText(file);
-    e.target.value = "";
   };
 
-  const TRAIL_COLORS = ["#f97316", "#10b981", "#3b82f6", "#8b5cf6", "#f43f5e", "#06b6d4"];
+  const TRAIL_COLORS = ["#ff8a3d", "#34d399", "#5b8cff", "#a78bfa", "#f43f5e", "#22c3e6"];
+  const fab = (extra = {}) => ({ ...glass({ borderRadius: 16 }), width: 44, height: 44, color: "#fff", fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.4)", ...extra });
+  const totalDays = stops.reduce((s, x) => s + (x.days || 0), 0);
 
   return (
-    <div style={{ position: "relative", height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Category filter bar */}
-      <div style={{ display: "flex", gap: 6, padding: "10px 14px", background: T.navBg, overflowX: "auto", flexShrink: 0, borderBottom: `1px solid ${T.surfaceBorder}` }}>
-        {[{ id: "all", label: "הכל", icon: "🗺️", color: T.primary }, ...PIN_CATS].map(cat => (
-          <button key={cat.id} onClick={() => setFilterCat(cat.id)} style={{
-            display: "flex", alignItems: "center", gap: 5,
-            background: filterCat === cat.id ? (cat.color || T.primary) : "rgba(255,255,255,0.06)",
-            border: "none", borderRadius: 20, color: "#fff", padding: "5px 12px",
-            cursor: "pointer", fontSize: 12, whiteSpace: "nowrap", fontFamily: "'Heebo',sans-serif", flexShrink: 0,
-          }}>{cat.icon} {cat.label}</button>
-        ))}
-      </div>
+    <div style={{ position: "relative", height: "100%", overflow: "hidden" }}>
+      <div ref={mapRef} style={{ position: "absolute", inset: 0, zIndex: 0, background: "#0e1322" }} />
 
-      {/* Map */}
-      <div ref={mapRef} style={{ flex: 1, background: T.faint, position: "relative", zIndex: 0 }}>
-
-      </div>
-
-      {/* FABs */}
-      <div style={{ position: "absolute", bottom: 16, left: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-        {/* GPX upload */}
-        <button onClick={() => gpxInputRef.current?.click()} style={{
-          width: 44, height: 44, borderRadius: "50%", background: T.accent,
-          border: "none", color: "#fff", fontSize: 20, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 4px 14px rgba(249,115,22,0.5)",
-        }} title="העלה מסלול GPX">{gpxLoading ? "⏳" : "⛰️"}</button>
-        <input ref={gpxInputRef} type="file" accept=".gpx" style={{ display: "none" }} onChange={handleGPX} />
-
-        {/* Toggle list */}
-        <button onClick={() => setShowList(v => !v)} style={{
-          width: 44, height: 44, borderRadius: "50%", background: showList ? T.primary : "rgba(255,255,255,0.1)",
-          border: `1px solid ${T.surfaceBorder}`, color: "#fff", fontSize: 18, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-        }}>📋</button>
-      </div>
-
-      {/* Add pin FAB */}
-      <button onClick={() => { setClickMode(v => !v); setPending(null); }} style={{
-        position: "absolute", bottom: 16, right: 14,
-        background: clickMode ? "#ef4444" : T.primary,
-        border: "none", borderRadius: 28, color: "#fff",
-        padding: "12px 18px", cursor: "pointer", fontFamily: "'Heebo',sans-serif",
-        fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", gap: 6,
-        boxShadow: "0 4px 16px rgba(59,130,246,0.5)", transition: "background 0.2s",
-      }}>
-        {clickMode ? "✕ ביטול" : "📍 הוסף נקודה"}
-      </button>
-
-      {clickMode && !pending && (
-        <div style={{ position: "absolute", top: 54, left: "50%", transform: "translateX(-50%)", background: "rgba(15,20,32,0.92)", border: `1px solid ${T.primaryBorder}`, borderRadius: 10, padding: "8px 14px", fontSize: 13, color: T.primary, backdropFilter: "blur(8px)" }}>
-          לחץ על המפה להוספת נקודה
+      {/* Search */}
+      <div style={{ position: "absolute", top: 10, right: 10, left: 10, zIndex: 500, display: "flex", gap: 8 }}>
+        <div style={{ ...glass({ borderRadius: 16 }), flex: 1, display: "flex", alignItems: "center", padding: "0 12px", boxShadow: "0 6px 18px rgba(0,0,0,.35)" }}>
+          <span style={{ fontSize: 15, opacity: 0.8 }}>{searching ? "⏳" : "🔍"}</span>
+          <input value={query} onChange={e => { setQuery(e.target.value); if (!e.target.value) setResults(null); }} onKeyDown={e => e.key === "Enter" && doSearch()}
+            placeholder="חיפוש מקום (למשל Dubrovnik)" enterKeyHint="search"
+            style={{ flex: 1, background: "none", border: "none", color: T.text, fontFamily: "'Heebo',sans-serif", padding: "11px 8px", minWidth: 0, boxShadow: "none" }} />
+          {query && <button onClick={() => { setQuery(""); setResults(null); }} style={{ background: "none", border: "none", color: T.muted, fontSize: 16, cursor: "pointer" }}>✕</button>}
         </div>
-      )}
+        <button onClick={() => setStyle(s => (s === "dark" ? "light" : "dark"))} style={fab()}>{TILE_STYLES[style === "dark" ? "light" : "dark"].label}</button>
+        <button onClick={() => setShowLayers(true)} style={fab()}>☰</button>
+      </div>
 
-      {/* Add pin form */}
-      {pending && (
-        <div style={{ position: "absolute", bottom: 70, right: 14, left: 14, background: "rgba(11,14,23,0.96)", border: `1px solid ${T.primaryBorder}`, borderRadius: 14, padding: 16, backdropFilter: "blur(12px)" }}>
-          <div style={{ fontWeight: 700, color: T.text, marginBottom: 12, fontSize: 14 }}>📍 נקודה חדשה</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-            {PIN_CATS.map(cat => (
-              <button key={cat.id} onClick={() => setForm(f => ({ ...f, cat: cat.id }))} style={{
-                background: form.cat === cat.id ? cat.color : "rgba(255,255,255,0.07)",
-                border: "none", borderRadius: 16, color: "#fff", padding: "4px 10px",
-                cursor: "pointer", fontSize: 12, fontFamily: "'Heebo',sans-serif",
-              }}>{cat.icon} {cat.label}</button>
-            ))}
-          </div>
-          <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="שם המקום *" autoFocus
-            style={{ width: "100%", background: T.faint, border: `1px solid ${T.surfaceBorder}`, borderRadius: 8, color: T.text, fontFamily: "'Heebo',sans-serif", fontSize: 14, padding: "8px 12px", marginBottom: 8, boxSizing: "border-box" }} />
-          <input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} placeholder="הערה (אופציונלי)"
-            style={{ width: "100%", background: T.faint, border: `1px solid ${T.surfaceBorder}`, borderRadius: 8, color: T.text, fontFamily: "'Heebo',sans-serif", fontSize: 14, padding: "8px 12px", marginBottom: 10, boxSizing: "border-box" }} />
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={savePin} style={{ flex: 1, background: T.primary, border: "none", borderRadius: 8, color: "#fff", padding: 9, cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontWeight: 700, fontSize: 14 }}>שמור</button>
-            <button onClick={() => setPending(null)} style={{ background: "rgba(255,255,255,0.07)", border: `1px solid ${T.surfaceBorder}`, borderRadius: 8, color: T.muted, padding: "9px 14px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 14 }}>ביטול</button>
-          </div>
-        </div>
-      )}
-
-      {/* Side list panel */}
-      {showList && (
-        <div style={{ position: "absolute", top: 54, right: 0, bottom: 70, width: "min(280px, 80%)", background: "rgba(11,14,23,0.96)", borderLeft: `1px solid ${T.surfaceBorder}`, overflowY: "auto", padding: 12, backdropFilter: "blur(12px)" }}>
-          {tracks.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 12, color: T.muted, marginBottom: 6, fontWeight: 600 }}>מסלולי GPX</div>
-              {tracks.map((trk, i) => (
-                <div key={trk.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <div style={{ width: 12, height: 4, borderRadius: 2, background: trk.color, flexShrink: 0 }} />
-                  <span style={{ flex: 1, fontSize: 13, color: T.text }}>{trk.name}</span>
-                  <div style={{ display: "flex", gap: 4 }}>
-                    {TRAIL_COLORS.map(col => (
-                      <div key={col} onClick={() => onTracksChange(tracks.map((t, j) => j === i ? { ...t, color: col } : t))}
-                        style={{ width: 14, height: 14, borderRadius: "50%", background: col, cursor: "pointer", border: trk.color === col ? "2px solid white" : "none" }} />
-                    ))}
-                  </div>
-                  <button onClick={() => onTracksChange(tracks.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
-                </div>
-              ))}
+      {results && (
+        <div className="fade-up" style={{ ...glass({ borderRadius: 16, background: "rgba(16,21,36,0.95)" }), position: "absolute", top: 62, right: 10, left: 10, zIndex: 600, maxHeight: "45%", overflowY: "auto" }}>
+          {results.length === 0 && <div style={{ padding: 14, color: T.muted, fontSize: 14 }}>לא נמצא. נסו באנגלית או עם שם העיר.</div>}
+          {results.map((r, k) => (
+            <div key={k} onClick={() => pickResult(r)} style={{ padding: "11px 14px", borderBottom: `1px solid ${T.surfaceBorder}`, cursor: "pointer" }}>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>📍 {r.name}</div>
+              <div style={{ fontSize: 12, color: T.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.full}</div>
             </div>
-          )}
-          <div style={{ fontSize: 12, color: T.muted, marginBottom: 6, fontWeight: 600 }}>נקודות ({pins.length})</div>
-          {(filterCat === "all" ? pins : pins.filter(p => p.cat === filterCat)).map(pin => {
+          ))}
+        </div>
+      )}
+
+      {geoQueue > 0 && visible && (
+        <div style={{ ...glass({ borderRadius: 12 }), position: "absolute", top: 62, left: "50%", transform: "translateX(-50%)", zIndex: 500, padding: "6px 12px", fontSize: 12, color: T.muted, whiteSpace: "nowrap" }}>📍 ממקם ערים על המפה… ({geoQueue})</div>
+      )}
+      {addMode && !pending && (
+        <div style={{ ...glass({ borderRadius: 12, border: `1px solid ${T.primaryBorder}` }), position: "absolute", top: 62, left: "50%", transform: "translateX(-50%)", zIndex: 500, padding: "8px 14px", fontSize: 13, whiteSpace: "nowrap" }}>👆 געו במפה במקום שרוצים להוסיף</div>
+      )}
+
+      {/* Add point */}
+      <button onClick={() => { setAddMode(v => !v); setPending(null); }} style={fab({ position: "absolute", left: 12, bottom: 172, zIndex: 500, width: 52, height: 52, borderRadius: 18, fontSize: 24, background: addMode ? "rgba(248,113,113,0.9)" : T.grad, border: "none", boxShadow: "0 8px 22px rgba(91,140,255,.45)" })}>{addMode ? "✕" : "+"}</button>
+
+      {/* Stop cards */}
+      <div ref={cardsRef} onScroll={onCardsScroll} className="scr" style={{ position: "absolute", bottom: 10, right: 0, left: 0, zIndex: 500, display: "flex", gap: 10, overflowX: "auto", scrollSnapType: "x mandatory", padding: "0 10vw 2px" }}>
+        <div onClick={() => selectStop(-1, true)} style={{ ...glass({ borderRadius: 20, background: "rgba(16,21,36,0.86)", border: `1px solid ${active === -1 ? T.primaryBorder : T.surfaceBorder}` }), flex: "0 0 min(78vw, 320px)", scrollSnapAlign: "center", padding: 14, boxSizing: "border-box", cursor: "pointer", minHeight: 140 }}>
+          <div style={{ fontSize: 12, color: T.muted }}>כל הטיול</div>
+          <div style={{ fontWeight: 900, fontSize: 20, margin: "2px 0 4px" }}>🌍 {countries.length} מדינות · {stops.length} תחנות</div>
+          <div style={{ fontSize: 13, color: T.muted }}>{fmt(getDates(countries)[0].start)} → {fmt(getDates(countries)[countries.length - 1].end)}</div>
+          <div style={{ fontSize: 12, color: T.muted, marginTop: 8 }}>👈 מחליקים לתחנה הבאה. ערים שמוסיפים בטאב "מסלול" יופיעו כאן כתחנות.</div>
+        </div>
+        {stops.map((s, i) => {
+          const near = pins.filter(p => distKm(p, s) < (s.isCountry ? 250 : 40));
+          const chosen = compares.filter(g => g.country === s.country.name && g.chosenId).map(g => g.options.find(o => o.id === g.chosenId)).filter(Boolean);
+          const on = active === i;
+          return (
+            <div key={s.key} onClick={() => selectStop(i, true)} style={{ ...glass({ borderRadius: 20, background: "rgba(16,21,36,0.86)", border: `1px solid ${on ? s.country.color + "aa" : T.surfaceBorder}` }), flex: "0 0 min(78vw, 320px)", scrollSnapAlign: "center", padding: 14, boxSizing: "border-box", cursor: "pointer", minHeight: 140, transition: "border-color .3s" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ width: 26, height: 26, borderRadius: "50%", background: s.country.color, color: "#fff", fontWeight: 800, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
+                <div style={{ fontSize: 12, color: T.muted }}>{s.country.emoji} {s.country.name}</div>
+              </div>
+              <div style={{ fontWeight: 900, fontSize: 20, margin: "4px 0 2px" }}>{s.name}</div>
+              <div style={{ fontSize: 13, color: T.muted }}>{fmt(s.start)} – {fmt(s.end)} · {s.days} ימים{s.accommodation ? ` · 🏨 ${s.accommodation}` : ""}</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                {chosen.slice(0, 2).map(o => <span key={o.id} style={{ fontSize: 11, background: "rgba(52,211,153,0.15)", color: T.green, borderRadius: 8, padding: "2px 8px" }}>✓ {o.name}</span>)}
+                {near.length > 0 && <span style={{ fontSize: 11, background: T.primaryDim, color: "#c7d4ff", borderRadius: 8, padding: "2px 8px" }}>📍 {near.length} נקודות באזור</span>}
+                {s.isCountry && <span style={{ fontSize: 11, color: T.muted }}>עוד אין ערים בטאב "מסלול"</span>}
+                {s.notes && <span style={{ fontSize: 11, color: T.muted }}>📝 {s.notes}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* New point */}
+      {pending && (
+        <Sheet onClose={() => setPending(null)} title="📍 נקודה חדשה">
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {PIN_CATS.map(cat => <button key={cat.id} onClick={() => setForm(f => ({ ...f, cat: cat.id }))} style={chip(form.cat === cat.id, cat.color, { fontSize: 12, padding: "5px 10px" })}>{cat.icon} {cat.label}</button>)}
+          </div>
+          <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="שם המקום *" style={inputStyle({ marginBottom: 8 })} />
+          <input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} placeholder="הערה (אופציונלי)" style={inputStyle({ marginBottom: 12 })} />
+          <button onClick={savePin} style={primaryBtn()}>שמור נקודה</button>
+        </Sheet>
+      )}
+
+      {/* Layers & list */}
+      {showLayers && (
+        <Sheet onClose={() => setShowLayers(false)} title="🗺️ מה מוצג במפה">
+          <div style={{ fontSize: 12, color: T.muted, marginBottom: 6, fontWeight: 600 }}>קטגוריות (לחיצה מסתירה/מציגה)</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+            {PIN_CATS.map(cat => <button key={cat.id} onClick={() => setHiddenCats(h => ({ ...h, [cat.id]: !h[cat.id] }))} style={chip(!hiddenCats[cat.id], cat.color, { fontSize: 12, padding: "5px 10px", opacity: hiddenCats[cat.id] ? 0.5 : 1 })}>{cat.icon} {cat.label}</button>)}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ flex: 1, fontSize: 12, color: T.muted, fontWeight: 600 }}>מסלולי GPX ({tracks.length})</div>
+            <button onClick={() => gpxInputRef.current?.click()} style={chip(false, T.primary, { fontSize: 12, padding: "4px 10px" })}>⛰️ ייבוא GPX</button>
+            <input ref={gpxInputRef} type="file" accept=".gpx,application/gpx+xml" style={{ display: "none" }} onChange={handleGPX} />
+          </div>
+          {tracks.map((trk, i) => (
+            <div key={trk.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${T.surfaceBorder}` }}>
+              <span onClick={() => { setShowLayers(false); mapInst.current.flyToBounds(L.polyline(trk.points).getBounds(), { padding: [30, 30] }); }} style={{ flex: 1, fontSize: 14, cursor: "pointer" }}>🥾 {trk.name}</span>
+              {TRAIL_COLORS.map(col => <div key={col} onClick={() => onTracksChange(tracks.map((t, j) => (j === i ? { ...t, color: col } : t)))} style={{ width: 16, height: 16, borderRadius: "50%", background: col, cursor: "pointer", border: trk.color === col ? "2px solid #fff" : "none" }} />)}
+              <button onClick={() => { if (confirm(`למחוק את המסלול "${trk.name}"?`)) onTracksChange(tracks.filter((_, j) => j !== i)); }} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18 }}>×</button>
+            </div>
+          ))}
+
+          <div style={{ fontSize: 12, color: T.muted, margin: "14px 0 6px", fontWeight: 600 }}>הנקודות שלי ({pins.length})</div>
+          {pins.length === 0 && <div style={{ fontSize: 13, color: T.muted }}>עוד אין. לוחצים + או מחפשים מקום למעלה.</div>}
+          {pins.map(pin => {
             const cat = PIN_CATS.find(c => c.id === pin.cat) || PIN_CATS[5];
             return (
-              <div key={pin.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, background: T.surface, borderRadius: 8, padding: "8px 10px" }}>
-                <span style={{ fontSize: 16 }}>{cat.icon}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pin.name}</div>
-                  {pin.note && <div style={{ fontSize: 11, color: T.muted }}>{pin.note}</div>}
+              <div key={pin.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${T.surfaceBorder}` }}>
+                <div onClick={() => { setShowLayers(false); mapInst.current.flyTo([pin.lat, pin.lng], 14, { duration: 0.8 }); }} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{cat.icon} {pin.name}</div>
+                  {pin.note && <div style={{ fontSize: 12, color: T.muted }}>{pin.note}</div>}
                 </div>
-                <button onClick={() => onPinsChange(pins.filter(p => p.id !== pin.id))} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 16 }}>×</button>
+                <button onClick={() => { if (confirm(`למחוק את "${pin.name}"?`)) onPinsChange(pins.filter(p => p.id !== pin.id)); }} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18 }}>×</button>
               </div>
             );
           })}
-          {pins.length === 0 && <div style={{ fontSize: 13, color: T.muted, textAlign: "center", marginTop: 20 }}>אין נקודות עדיין</div>}
-        </div>
+        </Sheet>
       )}
     </div>
   );
@@ -1557,14 +1670,18 @@ export default function TripPlanner() {
 
       {/* CONTENT */}
       <div style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }}>
-        <div key={tab} className={dir === "left" ? "enter-left" : "enter-right"} style={{ height: "100%" }}>
-          {tab === "map"      && <MapScreen countries={countries} pins={pins} onPinsChange={setPins} tracks={tracks} onTracksChange={setTracks} />}
-          {tab === "plan"     && <PlanScreen countries={countries} setCountries={setCountries} cities={cities} setCities={setCities} notes={notes} setNotes={setNotes} />}
-          {tab === "budget"   && <BudgetScreen countries={countries} expenses={expenses} setExpenses={setExpenses} persons={persons} />}
-          {tab === "compare"  && <CompareScreen countries={countries} compares={compares} setCompares={setCompares} persons={persons} pins={pins} setPins={setPins} />}
-          {tab === "gear"     && <GearScreen checkedBy={gearCheckedBy} setCheckedBy={setGearCheckedBy} customGear={customGear} setCustomGear={setCustomGear} gearMeta={gearMeta} setGearMeta={setGearMeta} persons={persons} activeUser={activeUser} setActiveUser={setActiveUser} />}
-          {tab === "personal" && <PersonalScreen persons={persons} setPersons={setPersons} activeUser={activeUser} setActiveUser={setActiveUser} expenses={expenses} personalNotes={personalNotes} setPersonalNotes={setPersonalNotes} countries={countries} gearCheckedBy={gearCheckedBy} customGear={customGear} onGoGear={() => goTab("gear")} />}
+        <div className={tab === "map" ? "map-in" : ""} style={{ position: "absolute", inset: 0, visibility: tab === "map" ? "visible" : "hidden", pointerEvents: tab === "map" ? "auto" : "none" }}>
+          <MapScreen visible={tab === "map"} countries={countries} cities={cities} setCities={setCities} pins={pins} onPinsChange={setPins} tracks={tracks} onTracksChange={setTracks} compares={compares} />
         </div>
+        {tab !== "map" && (
+          <div key={tab} className={dir === "left" ? "enter-left" : "enter-right"} style={{ height: "100%", position: "relative", zIndex: 1 }}>
+            {tab === "plan"     && <PlanScreen countries={countries} setCountries={setCountries} cities={cities} setCities={setCities} notes={notes} setNotes={setNotes} />}
+            {tab === "budget"   && <BudgetScreen countries={countries} expenses={expenses} setExpenses={setExpenses} persons={persons} />}
+            {tab === "compare"  && <CompareScreen countries={countries} compares={compares} setCompares={setCompares} persons={persons} pins={pins} setPins={setPins} />}
+            {tab === "gear"     && <GearScreen checkedBy={gearCheckedBy} setCheckedBy={setGearCheckedBy} customGear={customGear} setCustomGear={setCustomGear} gearMeta={gearMeta} setGearMeta={setGearMeta} persons={persons} activeUser={activeUser} setActiveUser={setActiveUser} />}
+            {tab === "personal" && <PersonalScreen persons={persons} setPersons={setPersons} activeUser={activeUser} setActiveUser={setActiveUser} expenses={expenses} personalNotes={personalNotes} setPersonalNotes={setPersonalNotes} countries={countries} gearCheckedBy={gearCheckedBy} customGear={customGear} onGoGear={() => goTab("gear")} />}
+          </div>
+        )}
       </div>
 
       {/* BOTTOM NAV */}
