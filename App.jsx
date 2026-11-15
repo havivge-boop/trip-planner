@@ -14,7 +14,7 @@ L.Icon.Default.mergeOptions({
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const TRIP_START = new Date("2027-04-29");
+const TRIP_START = new Date("2027-05-03");
 
 const COUNTRIES = [
   { name: "בולגריה", emoji: "🇧🇬", weeks: 1, color: "#f97316", lat: 42.7, lng: 25.5 },
