@@ -1186,15 +1186,93 @@ function CompareScreen({ countries, compares, setCompares, persons, pins, setPin
 
 // ─── GEAR SCREEN ──────────────────────────────────────────────────────────────
 
-function GearScreen({ checked, setChecked, customGear, setCustomGear }) {
+// Turn a pasted list (from notes / another chat) into gear items.
+// Headings: "# x", "x:", "**x**". Items: bullets, numbers, checkboxes or plain lines.
+function parseGearList(text, knownCats) {
+  const out = [];
+  let cat = null;
+  const findCat = h => {
+    const bare = x => x.replace(/[^\p{L}\p{N} ]/gu, "").trim();
+    const hb = bare(h);
+    return knownCats.find(k => { const kb = bare(k); return kb && hb && (hb.includes(kb) || kb.includes(hb)); }) || (/^\p{L}/u.test(h) ? `📦 ${h}` : h);
+  };
+  for (let raw of text.split(/\r?\n/)) {
+    let line = raw.trim();
+    if (!line) continue;
+    const isBullet = /^([-*•–▪◦]|\d+[.)]|\[[ xX]\]|☐|☑|✅|✔)\s*/.test(line);
+    const heading = !isBullet && (/^#+\s*/.test(line) || /:$/.test(line) || /^\*\*.+\*\*$/.test(line));
+    if (heading) {
+      const h = line.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/:$/, "").trim();
+      if (h) cat = findCat(h);
+      continue;
+    }
+    line = line.replace(/^([-*•–▪◦]|\d+[.)]|\[[ xX]\]|☐|☑|✅|✔)\s*/, "").replace(/^\[[ xX]\]\s*/, "");
+    let link = "";
+    const md = line.match(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/);
+    if (md) { link = md[2]; line = line.replace(md[0], /^(קישור|לינק|link|here|כאן|לכאן)$/i.test(md[1].trim()) ? "" : md[1]); }
+    const url = line.match(/https?:\/\/\S+/);
+    if (url) { link = link || url[0]; line = line.replace(url[0], ""); }
+    line = line.replace(/\*\*/g, "").replace(/[\s\-–:|]+$/, "").trim();
+    if (line) out.push({ text: line, cat: cat || "🧩 אחר", link });
+  }
+  return out;
+}
+const normText = t => String(t).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+function GearImport({ onClose, onImport }) {
+  const [text, setText] = useState("");
+  const [result, setResult] = useState(null);
+  return (
+    <Sheet onClose={onClose} title="📋 ייבוא רשימת ציוד">
+      {result ? (
+        <div style={{ textAlign: "center", padding: "10px 0" }}>
+          <div style={{ fontSize: 40 }}>✅</div>
+          <div style={{ fontWeight: 800, fontSize: 17, margin: "6px 0" }}>נוספו {result.added} פריטים חדשים</div>
+          <div style={{ fontSize: 13, color: T.muted }}>{result.existing} כבר היו ברשימה{result.links ? `, ול-${result.links} מהם נוסף קישור` : ""}. שום דבר לא נמחק.</div>
+          <button onClick={onClose} style={primaryBtn({ marginTop: 16 })}>סגור</button>
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, color: T.muted, marginBottom: 8 }}>מדביקים את הרשימה (למשל מהצ׳אט השני). כותרות כמו "ביגוד:" הופכות לקטגוריות, וקישורים נשמרים ליד הפריט. פריטים שכבר קיימים לא ייכפלו, אז אפשר להדביק שוב כל פעם שהרשימה מתעדכנת.</div>
+          <textarea value={text} onChange={e => setText(e.target.value)} placeholder={"ביגוד:\n- חולצת דרייפיט x3\n- מעיל גשם https://...\n\nתרמיל:\n- תיק 55 ליטר"} style={inputStyle({ minHeight: 200, resize: "vertical" })} />
+          <button onClick={() => setResult(onImport(text))} disabled={!text.trim()} style={primaryBtn({ marginTop: 10, opacity: text.trim() ? 1 : 0.5 })}>ייבא</button>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+function GearItemEdit({ item, meta, onSave, onDelete, onClose }) {
+  const [link, setLink] = useState(meta?.link || "");
+  const [note, setNote] = useState(meta?.note || "");
+  return (
+    <Sheet onClose={onClose} title={item.text}>
+      <input value={link} onChange={e => setLink(e.target.value)} placeholder="🔗 קישור למוצר (למשל מה שרצינו לקנות)" style={inputStyle()} />
+      <input value={note} onChange={e => setNote(e.target.value)} placeholder="הערה (מידה, צבע, מחיר…)" style={inputStyle({ marginTop: 8 })} />
+      <button onClick={() => { onSave({ link: link.trim(), note: note.trim() }); onClose(); }} style={primaryBtn({ marginTop: 12 })}>שמור</button>
+      {onDelete && <button onClick={() => { if (confirm(`למחוק את "${item.text}" מהרשימה?`)) { onDelete(); onClose(); } }} style={{ width: "100%", marginTop: 8, background: "none", border: `1px solid ${T.surfaceBorder}`, borderRadius: 14, color: T.red, padding: 10, cursor: "pointer", fontFamily: "'Heebo',sans-serif" }}>מחק פריט</button>}
+    </Sheet>
+  );
+}
+
+const gearCats = customGear => [...Object.keys(GEAR_ITEMS), ...[...new Set(customGear.map(i => i.cat))].filter(c => !GEAR_ITEMS[c])];
+const gearAll = customGear => [...Object.values(GEAR_ITEMS).flat(), ...customGear];
+
+function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMeta, setGearMeta, persons, activeUser, setActiveUser }) {
   const [expanded, setExpanded] = useState("📄 מסמכים");
   const [newItem, setNewItem] = useState("");
   const [newCat, setNewCat] = useState("📄 מסמכים");
+  const [editItem, setEditItem] = useState(null);
+  const [showImport, setShowImport] = useState(false);
 
-  const allItems = Object.values(GEAR_ITEMS).flat();
-  const totalDone = allItems.filter(i => checked[i.id]).length + customGear.filter(i => checked[i.id]).length;
-  const totalAll = allItems.length + customGear.length;
-  const pct = Math.round((totalDone / totalAll) * 100);
+  const checked = checkedBy[activeUser] || {};
+  const other = activeUser === "person1" ? "person2" : "person1";
+  const cats = gearCats(customGear);
+  const all = gearAll(customGear);
+  const doneOf = pid => all.filter(i => checkedBy[pid]?.[i.id]).length;
+  const totalDone = doneOf(activeUser);
+  const pct = all.length ? Math.round((totalDone / all.length) * 100) : 0;
+  const toggle = id => setCheckedBy(p => ({ ...p, [activeUser]: { ...(p[activeUser] || {}), [id]: !p[activeUser]?.[id] } }));
 
   const addCustom = () => {
     if (!newItem.trim()) return;
@@ -1203,81 +1281,122 @@ function GearScreen({ checked, setChecked, customGear, setCustomGear }) {
     setNewItem("");
   };
 
+  const importList = text => {
+    const items = parseGearList(text, cats);
+    const byNorm = new Map(all.map(i => [normText(i.text), i]));
+    const added = [], metaPatch = {};
+    let existing = 0, links = 0;
+    items.forEach((it, n) => {
+      const key = normText(it.text);
+      const found = byNorm.get(key);
+      if (found) {
+        existing++;
+        if (it.link && !gearMeta[found.id]?.link && !metaPatch[found.id]) { metaPatch[found.id] = { ...(gearMeta[found.id] || {}), link: it.link }; links++; }
+        return;
+      }
+      const id = `custom_${Date.now()}_${n}`;
+      const item = { id, text: it.text, cat: it.cat };
+      byNorm.set(key, item);
+      added.push(item);
+      if (it.link) metaPatch[id] = { link: it.link };
+    });
+    if (added.length) setCustomGear(p => [...p, ...added]);
+    if (Object.keys(metaPatch).length) setGearMeta(p => ({ ...p, ...metaPatch }));
+    return { added: added.length, existing, links };
+  };
+
   return (
     <div className="scr" style={{ padding: "16px 14px 24px", overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
+      <div style={{ marginBottom: 12 }}>
+        <Segmented value={activeUser} onChange={setActiveUser} options={[{ id: "person1", label: `🎒 ${persons[0]}` }, { id: "person2", label: `🎒 ${persons[1]}` }]} />
+      </div>
+
       {/* Progress */}
-      <div style={{ ...card({ marginBottom: 16, display: "flex", alignItems: "center", gap: 14 }) }}>
+      <div key={activeUser} className="fade-up" style={{ ...card({ marginBottom: 12, display: "flex", alignItems: "center", gap: 14 }) }}>
         <div style={{ position: "relative", width: 60, height: 60, flexShrink: 0 }}>
           <svg viewBox="0 0 60 60" style={{ transform: "rotate(-90deg)" }}>
             <circle cx="30" cy="30" r="25" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" />
-            <circle cx="30" cy="30" r="25" fill="none" stroke="#10b981" strokeWidth="6" strokeDasharray={`${pct * 1.57} 157`} strokeLinecap="round" />
+            <circle cx="30" cy="30" r="25" fill="none" stroke={T.green} strokeWidth="6" strokeDasharray={`${pct * 1.57} 157`} strokeLinecap="round" style={{ transition: "stroke-dasharray .6s" }} />
           </svg>
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#10b981" }}>{pct}%</div>
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: T.green }}>{pct}%</div>
         </div>
-        <div>
-          <div style={{ fontWeight: 700, fontSize: 16, color: T.text }}>מוכנות ציוד</div>
-          <div style={{ fontSize: 13, color: T.muted }}>{totalDone} מתוך {totalAll} פריטים</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>הציוד של {persons[activeUser === "person1" ? 0 : 1]}</div>
+          <div style={{ fontSize: 13, color: T.muted }}>{totalDone} מתוך {all.length} פריטים</div>
+          <div style={{ fontSize: 12, color: T.muted }}>{persons[other === "person1" ? 0 : 1]}: {doneOf(other)}/{all.length}</div>
         </div>
+        <button onClick={() => setShowImport(true)} style={chip(false, T.primary, { fontSize: 12 })}>📋 ייבוא</button>
       </div>
 
       {/* Gear categories */}
-      {Object.entries(GEAR_ITEMS).map(([cat, items]) => {
-        const catCustom = customGear.filter(i => i.cat === cat);
-        const allCatItems = [...items, ...catCustom];
+      {cats.map(cat => {
+        const allCatItems = [...(GEAR_ITEMS[cat] || []), ...customGear.filter(i => i.cat === cat)];
+        if (!allCatItems.length) return null;
         const catDone = allCatItems.filter(i => checked[i.id]).length;
         const isOpen = expanded === cat;
         return (
-          <div key={cat} style={{ marginBottom: 8 }}>
+          <div key={cat} style={{ marginBottom: 8, ...card({ padding: 0, overflow: "hidden", marginBottom: 8, border: `1px solid ${isOpen ? T.primaryBorder : T.surfaceBorder}` }) }}>
             <button onClick={() => setExpanded(isOpen ? null : cat)} style={{
-              width: "100%", background: isOpen ? T.primaryDim : T.surface,
-              border: `1px solid ${isOpen ? T.primaryBorder : T.surfaceBorder}`,
-              borderRadius: isOpen ? "10px 10px 0 0" : 10, color: T.text,
-              fontFamily: "'Heebo',sans-serif", padding: "12px 16px", cursor: "pointer",
+              width: "100%", background: isOpen ? T.primaryDim : "none", border: "none", color: T.text,
+              fontFamily: "'Heebo',sans-serif", padding: "13px 16px", cursor: "pointer",
               display: "flex", alignItems: "center", justifyContent: "space-between",
             }}>
-              <span style={{ fontWeight: 600, fontSize: 15 }}>{cat}</span>
+              <span style={{ fontWeight: 700, fontSize: 15 }}>{cat}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ background: catDone === allCatItems.length ? "rgba(16,185,129,0.2)" : "rgba(255,255,255,0.08)", color: catDone === allCatItems.length ? "#10b981" : T.muted, borderRadius: 20, padding: "2px 10px", fontSize: 12 }}>{catDone}/{allCatItems.length}</span>
-                <span style={{ color: T.muted, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                <span style={{ background: catDone === allCatItems.length ? "rgba(52,211,153,0.2)" : "rgba(255,255,255,0.08)", color: catDone === allCatItems.length ? T.green : T.muted, borderRadius: 20, padding: "2px 10px", fontSize: 12 }}>{catDone}/{allCatItems.length}</span>
+                <span style={{ color: T.muted, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .3s" }}>⌄</span>
               </div>
             </button>
-            {isOpen && (
-              <div style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${T.primaryBorder}`, borderTop: "none", borderRadius: "0 0 10px 10px" }}>
-                {allCatItems.map(item => (
-                  <div key={item.id} onClick={() => setChecked(p => ({ ...p, [item.id]: !p[item.id] }))} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", cursor: "pointer", borderBottom: `1px solid ${T.surfaceBorder}`, opacity: checked[item.id] ? 0.4 : 1 }}>
-                    <div style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, border: `2px solid ${checked[item.id] ? T.primary : "rgba(255,255,255,0.2)"}`, background: checked[item.id] ? T.primary : "transparent", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}>
-                      {checked[item.id] && <span style={{ color: "#fff", fontSize: 12 }}>✓</span>}
+            <div style={{ display: "grid", gridTemplateRows: isOpen ? "1fr" : "0fr", transition: "grid-template-rows .35s cubic-bezier(.2,.8,.2,1)" }}>
+              <div style={{ overflow: "hidden" }}>
+                {allCatItems.map(item => {
+                  const meta = gearMeta[item.id];
+                  const on = !!checked[item.id];
+                  return (
+                    <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderTop: `1px solid ${T.surfaceBorder}` }}>
+                      <div onClick={() => toggle(item.id)} style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0, cursor: "pointer", opacity: on ? 0.45 : 1, transition: "opacity .2s" }}>
+                        <div style={{ width: 22, height: 22, borderRadius: 7, flexShrink: 0, border: `2px solid ${on ? T.green : "rgba(255,255,255,0.22)"}`, background: on ? T.green : "transparent", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }}>
+                          {on && <span style={{ color: "#06281c", fontSize: 13, fontWeight: 900 }}>✓</span>}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, textDecoration: on ? "line-through" : "none" }}>{item.text}</div>
+                          {meta?.note && <div style={{ fontSize: 12, color: T.muted }}>{meta.note}</div>}
+                        </div>
+                      </div>
+                      {meta?.link && <a href={meta.link} target="_blank" rel="noreferrer" style={{ fontSize: 16, textDecoration: "none", flexShrink: 0 }}>🔗</a>}
+                      <button onClick={() => setEditItem(item)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 15, flexShrink: 0, padding: 2 }}>✏️</button>
                     </div>
-                    <span style={{ fontSize: 14, color: T.text, flex: 1, textDecoration: checked[item.id] ? "line-through" : "none" }}>{item.text}</span>
-                    {item.id.startsWith("custom_") && (
-                      <button onClick={e => { e.stopPropagation(); setCustomGear(p => p.filter(g => g.id !== item.id)); }} style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 16 }}>×</button>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
-            )}
+            </div>
           </div>
         );
       })}
 
       {/* Add custom item */}
       <div style={{ ...card({ marginTop: 8 }) }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: T.text, marginBottom: 10 }}>+ הוסף פריט</div>
-        <input value={newItem} onChange={e => setNewItem(e.target.value)} onKeyDown={e => e.key === "Enter" && addCustom()} placeholder="שם הפריט..." style={{ width: "100%", background: T.faint, border: `1px solid ${T.surfaceBorder}`, borderRadius: 8, color: T.text, fontFamily: "'Heebo',sans-serif", fontSize: 14, padding: "8px 12px", marginBottom: 8, boxSizing: "border-box" }} />
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>+ הוסף פריט (לשניכם)</div>
+        <input value={newItem} onChange={e => setNewItem(e.target.value)} onKeyDown={e => e.key === "Enter" && addCustom()} placeholder="שם הפריט..." style={inputStyle({ marginBottom: 8 })} />
         <div style={{ display: "flex", gap: 8 }}>
-          <select value={newCat} onChange={e => setNewCat(e.target.value)} style={{ flex: 1, background: T.faint, border: `1px solid ${T.surfaceBorder}`, borderRadius: 8, color: T.text, fontFamily: "'Heebo',sans-serif", fontSize: 13, padding: "8px 10px" }}>
-            {Object.keys(GEAR_ITEMS).map(k => <option key={k} style={{ background: "#1a1a2e" }}>{k}</option>)}
+          <select value={newCat} onChange={e => setNewCat(e.target.value)} style={inputStyle({ flex: 1 })}>
+            {cats.map(k => <option key={k} value={k}>{k}</option>)}
           </select>
-          <button onClick={addCustom} style={{ background: T.primaryDim, border: `1px solid ${T.primaryBorder}`, borderRadius: 8, color: T.primary, padding: "8px 16px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontWeight: 700, fontSize: 14 }}>הוסף</button>
+          <button onClick={addCustom} style={primaryBtn({ width: "auto", padding: "0 20px" })}>הוסף</button>
         </div>
       </div>
+
+      {showImport && <GearImport onClose={() => setShowImport(false)} onImport={importList} />}
+      {editItem && <GearItemEdit item={editItem} meta={gearMeta[editItem.id]} onClose={() => setEditItem(null)}
+        onSave={m => setGearMeta(p => ({ ...p, [editItem.id]: m }))}
+        onDelete={editItem.id.startsWith("custom_") ? () => setCustomGear(p => p.filter(g => g.id !== editItem.id)) : null} />}
     </div>
   );
 }
 
 // ─── PERSONAL SCREEN ──────────────────────────────────────────────────────────
 
-function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expenses, personalNotes, setPersonalNotes, countries }) {
+function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expenses, personalNotes, setPersonalNotes, countries, gearCheckedBy, customGear, onGoGear }) {
   const [editNames, setEditNames] = useState(false);
   const [tmpNames, setTmpNames] = useState([...persons]);
 
@@ -1325,6 +1444,26 @@ function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expens
         ))}
       </div>
 
+      {/* My gear */}
+      {(() => {
+        const all = gearAll(customGear);
+        const mine = gearCheckedBy[activeUser] || {};
+        const done = all.filter(i => mine[i.id]).length;
+        const left = all.filter(i => !mine[i.id]);
+        return (
+          <div onClick={onGoGear} style={{ ...card({ marginBottom: 16, cursor: "pointer" }) }}>
+            <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ flex: 1, fontWeight: 800 }}>🎒 הציוד שלי</div>
+              <div style={{ fontSize: 13, color: T.green, fontWeight: 700 }}>{done}/{all.length}</div>
+            </div>
+            <div style={{ height: 6, background: "rgba(255,255,255,0.08)", borderRadius: 3, overflow: "hidden", marginBottom: 8 }}>
+              <div style={{ height: "100%", width: `${all.length ? (done / all.length) * 100 : 0}%`, background: "linear-gradient(90deg,#34d399,#22c3e6)", transition: "width .6s" }} />
+            </div>
+            <div style={{ fontSize: 12, color: T.muted }}>{left.length ? `עוד חסר: ${left.slice(0, 4).map(i => i.text).join(", ")}${left.length > 4 ? ` ועוד ${left.length - 4}` : ""}` : "הכל ארוז! 🎉"}</div>
+          </div>
+        );
+      })()}
+
       {/* Personal notes per country */}
       <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 10 }}>📝 ההערות שלי לפי מדינה</div>
       {countries.map(c => (
@@ -1356,6 +1495,9 @@ export default function TripPlanner() {
   const [notes, setNotes] = useState(saved?.notes || {});
   const [expenses, setExpenses] = useState(saved?.expenses || []);
   const [gearChecked, setGearChecked] = useState(saved?.gearChecked || {});
+  // Per-person packing. Before this existed there was one shared checklist (gearChecked) – copy it to both.
+  const [gearCheckedBy, setGearCheckedBy] = useState(saved?.gearCheckedBy || { person1: { ...(saved?.gearChecked || {}) }, person2: { ...(saved?.gearChecked || {}) } });
+  const [gearMeta, setGearMeta] = useState(saved?.gearMeta || {});
   const [customGear, setCustomGear] = useState(saved?.customGear || []);
   const [persons, setPersons] = useState(saved?.persons || ["אני", "החבר"]);
   const [activeUser, setActiveUser] = useState(saved?.activeUser || "person1");
@@ -1366,11 +1508,11 @@ export default function TripPlanner() {
   const doSave = useCallback(() => {
     persist({
       countryWeeks: Object.fromEntries(countries.map(c => [c.name, c.weeks])),
-      pins, tracks, cities, notes, expenses, gearChecked, customGear, persons, activeUser, personalNotes, compares,
+      pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, customGear, persons, activeUser, personalNotes, compares,
     });
     setSavedPulse(true);
     setTimeout(() => setSavedPulse(false), 1200);
-  }, [countries, pins, tracks, cities, notes, expenses, gearChecked, customGear, persons, activeUser, personalNotes, compares]);
+  }, [countries, pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, customGear, persons, activeUser, personalNotes, compares]);
 
   useEffect(() => { const t = setTimeout(doSave, 800); return () => clearTimeout(t); }, [doSave]);
 
@@ -1420,8 +1562,8 @@ export default function TripPlanner() {
           {tab === "plan"     && <PlanScreen countries={countries} setCountries={setCountries} cities={cities} setCities={setCities} notes={notes} setNotes={setNotes} />}
           {tab === "budget"   && <BudgetScreen countries={countries} expenses={expenses} setExpenses={setExpenses} persons={persons} />}
           {tab === "compare"  && <CompareScreen countries={countries} compares={compares} setCompares={setCompares} persons={persons} pins={pins} setPins={setPins} />}
-          {tab === "gear"     && <GearScreen checked={gearChecked} setChecked={setGearChecked} customGear={customGear} setCustomGear={setCustomGear} />}
-          {tab === "personal" && <PersonalScreen persons={persons} setPersons={setPersons} activeUser={activeUser} setActiveUser={setActiveUser} expenses={expenses} personalNotes={personalNotes} setPersonalNotes={setPersonalNotes} countries={countries} />}
+          {tab === "gear"     && <GearScreen checkedBy={gearCheckedBy} setCheckedBy={setGearCheckedBy} customGear={customGear} setCustomGear={setCustomGear} gearMeta={gearMeta} setGearMeta={setGearMeta} persons={persons} activeUser={activeUser} setActiveUser={setActiveUser} />}
+          {tab === "personal" && <PersonalScreen persons={persons} setPersons={setPersons} activeUser={activeUser} setActiveUser={setActiveUser} expenses={expenses} personalNotes={personalNotes} setPersonalNotes={setPersonalNotes} countries={countries} gearCheckedBy={gearCheckedBy} customGear={customGear} onGoGear={() => goTab("gear")} />}
         </div>
       </div>
 
