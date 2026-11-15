@@ -202,7 +202,7 @@ function Sheet({ onClose, children, title }) {
       <div onClick={e => e.stopPropagation()} className="scr" style={{
         ...glass({ background: "rgba(16,21,36,0.92)" }), width: "100%", maxWidth: 560, maxHeight: "88vh", overflowY: "auto",
         borderRadius: "24px 24px 0 0", padding: "10px 16px calc(18px + env(safe-area-inset-bottom))", boxSizing: "border-box",
-        animation: "sheetUp .32s cubic-bezier(.2,.8,.2,1) both", direction: "rtl",
+        animation: "sheetUp .32s cubic-bezier(.2,.8,.2,1) both", direction: "rtl", color: T.text, fontFamily: "'Heebo', sans-serif",
       }}>
         <div style={{ width: 40, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.2)", margin: "0 auto 12px" }} />
         {title && (
@@ -235,10 +235,27 @@ function Segmented({ options, value, onChange, size = 15 }) {
 
 const COUNTRY_CODES = { בולגריה: "bg", יוון: "gr", אלבניה: "al", מונטנגרו: "me", קרואטיה: "hr", סלובניה: "si", אוסטריה: "at", איטליה: "it", שוויץ: "ch", נורווגיה: "no", שוודיה: "se", דנמרק: "dk" };
 
+// Each style has backup servers: if the first one fails to load, we switch automatically.
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
 const TILE_STYLES = {
-  dark:  { url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", label: "🌙" },
-  light: { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", label: "☀️" },
+  light: { label: "🗺️", name: "רגילה", sources: [
+    { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", attr: "© OpenStreetMap © CARTO" },
+    { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr: "© OpenStreetMap" },
+    { url: `${ESRI}/World_Street_Map/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri" },
+  ] },
+  dark: { label: "🌙", name: "כהה", sources: [
+    { url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", attr: "© OpenStreetMap © CARTO" },
+    { url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri", maxNative: 16 },
+  ] },
+  sat: { label: "🛰️", name: "לוויין", sources: [
+    { url: `${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri", labels: `${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}` },
+  ] },
 };
+const STYLE_ORDER = ["light", "dark", "sat"];
+const navLinks = (lat, lng) => ({
+  google: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`,
+  waze: `https://waze.com/ul?ll=${lat},${lng}&navigate=yes`,
+});
 
 // Free place search (OpenStreetMap Nominatim). Max ~1 request per second.
 async function geoSearch(q, cc, limit = 6) {
@@ -276,7 +293,8 @@ function buildStops(countries, cities) {
   return stops;
 }
 
-function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, tracks, onTracksChange, compares }) {
+function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, tracks, onTracksChange, compares, expenses, focus }) {
+  const pinMarkers = useRef({});
   const mapRef = useRef(null);
   const mapInst = useRef(null);
   const tileLayer = useRef(null);
@@ -285,13 +303,15 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
   const addModeRef = useRef(false);
   const gpxInputRef = useRef(null);
 
-  const [style, setStyle] = useState(() => { try { return localStorage.getItem("trip-map-style") || "dark"; } catch { return "dark"; } });
+  const [style, setStyle] = useState(() => { try { return TILE_STYLES[localStorage.getItem("trip-map-style2")] ? localStorage.getItem("trip-map-style2") : "light"; } catch { return "light"; } });
+  const [srcIdx, setSrcIdx] = useState(0);
+  const [toast, setToast] = useState("");
   const [active, setActive] = useState(-1); // -1 = whole trip
   const [addMode, setAddMode] = useState(false);
   const [pending, setPending] = useState(null); // {lat, lng, name?}
-  const [form, setForm] = useState({ name: "", note: "", cat: "attraction" });
   const [hiddenCats, setHiddenCats] = useState({});
   const [showLayers, setShowLayers] = useState(false);
+  const [editPin, setEditPin] = useState(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
   const [searching, setSearching] = useState(false);
@@ -309,19 +329,38 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
     map.on("click", e => {
       if (!addModeRef.current) return;
       setPending({ lat: e.latlng.lat, lng: e.latlng.lng });
-      setForm({ name: "", note: "", cat: "attraction" });
     });
     mapInst.current = map;
     return () => { map.remove(); mapInst.current = null; };
   }, []);
 
-  // Tiles
+  // Tiles (with automatic fallback to a backup server)
+  const labelLayer = useRef(null);
   useEffect(() => {
     const map = mapInst.current;
-    if (tileLayer.current) map.removeLayer(tileLayer.current);
-    tileLayer.current = L.tileLayer(TILE_STYLES[style].url, { attribution: "© OpenStreetMap © CARTO", maxZoom: 19, keepBuffer: 4, updateWhenIdle: false }).addTo(map);
-    try { localStorage.setItem("trip-map-style", style); } catch {}
-  }, [style]);
+    const sources = TILE_STYLES[style].sources;
+    const src = sources[Math.min(srcIdx, sources.length - 1)];
+    [tileLayer.current, labelLayer.current].forEach(l => l && map.removeLayer(l));
+    labelLayer.current = null;
+    let loaded = 0, failed = 0;
+    const layer = L.tileLayer(src.url, { attribution: src.attr, maxZoom: 19, maxNativeZoom: src.maxNative || 19, keepBuffer: 4, crossOrigin: false });
+    layer.on("tileload", () => { loaded++; });
+    layer.on("tileerror", () => {
+      failed++;
+      if (failed >= 3 && loaded === 0 && srcIdx < sources.length - 1) {
+        setSrcIdx(i => i + 1);
+        setToast("השרת של המפה לא ענה, עברתי לשרת חלופי");
+      }
+    });
+    tileLayer.current = layer.addTo(map);
+    if (src.labels) labelLayer.current = L.tileLayer(src.labels, { maxZoom: 19, pane: "overlayPane" }).addTo(map);
+    try { localStorage.setItem("trip-map-style2", style); } catch {}
+  }, [style, srcIdx]);
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 3500); return () => clearTimeout(t); }, [toast]);
+  const cycleStyle = () => {
+    const next = STYLE_ORDER[(STYLE_ORDER.indexOf(style) + 1) % STYLE_ORDER.length];
+    setSrcIdx(0); setStyle(next); setToast(`מפה ${TILE_STYLES[next].name}`);
+  };
 
   // Map was hidden – fix its size when shown
   useEffect(() => { if (visible && mapInst.current) setTimeout(() => mapInst.current?.invalidateSize(), 50); }, [visible]);
@@ -342,7 +381,7 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
       const size = on ? 34 : 24;
       const icon = L.divIcon({
         className: "",
-        html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${s.country.color};color:#fff;display:flex;align-items:center;justify-content:center;font:800 ${on ? 14 : 11}px Heebo,sans-serif;border:2px solid #fff;box-shadow:0 0 0 ${on ? 6 : 0}px ${s.country.color}55,0 3px 10px rgba(0,0,0,.5);transition:all .3s">${i + 1}</div>`,
+        html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${s.country.color};color:#fff;display:flex;align-items:center;justify-content:center;font:800 ${on ? 14 : 11}px Heebo,sans-serif;border:2px solid #fff;box-shadow:0 0 0 ${on ? 6 : 0}px ${s.country.color}55,0 3px 10px rgba(0,0,0,.5)">${i + 1}</div>`,
         iconSize: [size, size], iconAnchor: [size / 2, size / 2],
       });
       const m = L.marker([s.lat, s.lng], { icon, zIndexOffset: on ? 1000 : 500 }).addTo(map);
@@ -354,7 +393,8 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
   // My pins
   useEffect(() => {
     clear("pins");
-    pins.filter(p => !hiddenCats[p.cat]).forEach(pin => {
+    pinMarkers.current = {};
+    pins.filter(p => !hiddenCats[p.cat] && p.lat != null).forEach(pin => {
       const cat = PIN_CATS.find(c => c.id === pin.cat) || PIN_CATS[5];
       const icon = L.divIcon({
         className: "",
@@ -362,10 +402,14 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
         iconSize: [28, 28], iconAnchor: [14, 28], popupAnchor: [0, -26],
       });
       const esc = t => String(t).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
-      const gmaps = `https://www.google.com/maps/search/?api=1&query=${pin.lat},${pin.lng}`;
+      const n = navLinks(pin.lat, pin.lng);
+      const btn = "display:inline-block;margin:6px 0 0 6px;padding:4px 9px;border-radius:9px;background:#eef2ff;color:#1e293b;text-decoration:none;font-size:12px;font-weight:600";
+      const sub = [pin.country, pin.date ? fmtDay(pin.date) : ""].filter(Boolean).join(" · ");
+      const safeLink = isUrl(pin.link) ? esc(pin.link.trim()) : "";
       const m = L.marker([pin.lat, pin.lng], { icon }).addTo(mapInst.current)
-        .bindPopup(`<div style="font-family:Heebo,sans-serif;direction:rtl;min-width:140px"><b>${cat.icon} ${esc(pin.name)}</b>${pin.note ? `<br/><span style="color:#666">${esc(pin.note)}</span>` : ""}<br/><a href="${gmaps}" target="_blank" rel="noreferrer">פתח בגוגל מפות ↗</a></div>`);
+        .bindPopup(`<div style="font-family:Heebo,sans-serif;direction:rtl;min-width:160px"><b>${cat.icon} ${esc(pin.name)}</b>${sub ? `<br/><span style="color:#64748b;font-size:12px">${esc(sub)}</span>` : ""}${pin.note ? `<br/><span style="color:#475569">${esc(pin.note)}</span>` : ""}<br/><a style="${btn}" href="${n.google}" target="_blank" rel="noreferrer">🧭 גוגל מפות</a><a style="${btn}" href="${n.waze}" target="_blank" rel="noreferrer">🚗 Waze</a>${safeLink ? `<a style="${btn}" href="${safeLink}" target="_blank" rel="noreferrer">🔗 קישור</a>` : ""}</div>`);
       layers.current.pins.push(m);
+      pinMarkers.current[pin.id] = m;
     });
   }, [pins, hiddenCats]);
 
@@ -377,6 +421,17 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
       layers.current.tracks.push(L.polyline(trk.points, { color: trk.color || T.accent, weight: 4, opacity: 0.9 }).addTo(mapInst.current).bindPopup(`<b>${trk.name}</b>`));
     });
   }, [tracks]);
+
+  // "Show on map" from another tab
+  useEffect(() => {
+    if (!visible || !focus) return;
+    const pin = pins.find(p => p.id === focus.id);
+    if (!pin || pin.lat == null) return;
+    setTimeout(() => {
+      mapInst.current?.flyTo([pin.lat, pin.lng], 15, { duration: 0.9 });
+      setTimeout(() => pinMarkers.current[pin.id]?.openPopup(), 950);
+    }, 120);
+  }, [focus, visible]);
 
   // Find coordinates for cities typed in the plan tab (only while the map is open).
   const geoBusy = useRef(false);
@@ -446,14 +501,7 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
   const pickResult = r => {
     setResults(null);
     mapInst.current.flyTo([r.lat, r.lng], 14, { duration: 0.9 });
-    setPending({ lat: r.lat, lng: r.lng });
-    setForm({ name: r.name, note: "", cat: "attraction" });
-  };
-
-  const savePin = () => {
-    if (!form.name.trim() || !pending) return;
-    onPinsChange([...pins, { id: Date.now(), name: form.name.trim(), note: form.note.trim(), cat: form.cat, lat: pending.lat, lng: pending.lng }]);
-    setPending(null); setAddMode(false); setQuery("");
+    setPending({ lat: r.lat, lng: r.lng, name: r.name });
   };
 
   const handleGPX = e => {
@@ -490,7 +538,7 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
             style={{ flex: 1, background: "none", border: "none", color: T.text, fontFamily: "'Heebo',sans-serif", padding: "11px 8px", minWidth: 0, boxShadow: "none" }} />
           {query && <button onClick={() => { setQuery(""); setResults(null); }} style={{ background: "none", border: "none", color: T.muted, fontSize: 16, cursor: "pointer" }}>✕</button>}
         </div>
-        <button onClick={() => setStyle(s => (s === "dark" ? "light" : "dark"))} style={fab()}>{TILE_STYLES[style === "dark" ? "light" : "dark"].label}</button>
+        <button onClick={cycleStyle} style={fab()}>{TILE_STYLES[style].label}</button>
         <button onClick={() => setShowLayers(true)} style={fab()}>☰</button>
       </div>
 
@@ -506,6 +554,9 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
         </div>
       )}
 
+      {toast && (
+        <div className="fade-up" style={{ ...glass({ borderRadius: 12 }), position: "absolute", top: 104, left: "50%", transform: "translateX(-50%)", zIndex: 600, padding: "6px 12px", fontSize: 12, whiteSpace: "nowrap" }}>{toast}</div>
+      )}
       {geoQueue > 0 && visible && (
         <div style={{ ...glass({ borderRadius: 12 }), position: "absolute", top: 62, left: "50%", transform: "translateX(-50%)", zIndex: 500, padding: "6px 12px", fontSize: 12, color: T.muted, whiteSpace: "nowrap" }}>📍 ממקם ערים על המפה… ({geoQueue})</div>
       )}
@@ -525,7 +576,9 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
           <div style={{ fontSize: 12, color: T.muted, marginTop: 8 }}>👈 מחליקים לתחנה הבאה. ערים שמוסיפים בטאב "מסלול" יופיעו כאן כתחנות.</div>
         </div>
         {stops.map((s, i) => {
-          const near = pins.filter(p => distKm(p, s) < (s.isCountry ? 250 : 40));
+          const sIso = isoDay(s.start), eIso = isoDay(s.end);
+          const dayPlaces = pins.filter(p => p.date && p.date >= sIso && p.date <= eIso);
+          const near = pins.filter(p => p.lat != null && !dayPlaces.includes(p) && distKm(p, s) < (s.isCountry ? 250 : 40));
           const chosen = compares.filter(g => g.country === s.country.name && g.chosenId).map(g => g.options.find(o => o.id === g.chosenId)).filter(Boolean);
           const on = active === i;
           return (
@@ -538,7 +591,9 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
               <div style={{ fontSize: 13, color: T.muted }}>{fmt(s.start)} – {fmt(s.end)} · {s.days} ימים{s.accommodation ? ` · 🏨 ${s.accommodation}` : ""}</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                 {chosen.slice(0, 2).map(o => <span key={o.id} style={{ fontSize: 11, background: "rgba(52,211,153,0.15)", color: T.green, borderRadius: 8, padding: "2px 8px" }}>✓ {o.name}</span>)}
-                {near.length > 0 && <span style={{ fontSize: 11, background: T.primaryDim, color: "#c7d4ff", borderRadius: 8, padding: "2px 8px" }}>📍 {near.length} נקודות באזור</span>}
+                {dayPlaces.slice(0, 3).map(p => <span key={p.id} onClick={ev => { ev.stopPropagation(); if (p.lat != null) { mapInst.current.flyTo([p.lat, p.lng], 15); setTimeout(() => pinMarkers.current[p.id]?.openPopup(), 900); } }} style={{ fontSize: 11, background: "rgba(255,138,61,0.15)", color: "#ffb37a", borderRadius: 8, padding: "2px 8px" }}>📅 {fmtDay(p.date).split(" ")[0]} {p.name}</span>)}
+                {dayPlaces.length > 3 && <span style={{ fontSize: 11, color: T.muted }}>+{dayPlaces.length - 3}</span>}
+                {near.length > 0 && <span style={{ fontSize: 11, background: T.primaryDim, color: "#c7d4ff", borderRadius: 8, padding: "2px 8px" }}>📍 עוד {near.length} באזור</span>}
                 {s.isCountry && <span style={{ fontSize: 11, color: T.muted }}>עוד אין ערים בטאב "מסלול"</span>}
                 {s.notes && <span style={{ fontSize: 11, color: T.muted }}>📝 {s.notes}</span>}
               </div>
@@ -547,16 +602,16 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
         })}
       </div>
 
-      {/* New point */}
+      {/* New place */}
       {pending && (
-        <Sheet onClose={() => setPending(null)} title="📍 נקודה חדשה">
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-            {PIN_CATS.map(cat => <button key={cat.id} onClick={() => setForm(f => ({ ...f, cat: cat.id }))} style={chip(form.cat === cat.id, cat.color, { fontSize: 12, padding: "5px 10px" })}>{cat.icon} {cat.label}</button>)}
-          </div>
-          <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="שם המקום *" style={inputStyle({ marginBottom: 8 })} />
-          <input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} placeholder="הערה (אופציונלי)" style={inputStyle({ marginBottom: 12 })} />
-          <button onClick={savePin} style={primaryBtn()}>שמור נקודה</button>
-        </Sheet>
+        <PlaceForm initial={{ lat: pending.lat, lng: pending.lng, name: pending.name || "", country: nearestCountry(countries, cities, pending.lat, pending.lng) }}
+          countries={countries} onClose={() => setPending(null)}
+          onSave={data => { onPinsChange([...pins, { ...data, id: Date.now() }]); setPending(null); setAddMode(false); setQuery(""); }} />
+      )}
+      {editPin && (
+        <PlaceForm initial={editPin} countries={countries} onClose={() => setEditPin(null)}
+          onSave={data => { onPinsChange(pins.map(p => (p.id === editPin.id ? { ...p, ...data } : p))); setEditPin(null); }}
+          onDelete={() => { onPinsChange(pins.filter(p => p.id !== editPin.id)); setEditPin(null); }} />
       )}
 
       {/* Layers & list */}
@@ -586,11 +641,11 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
             const cat = PIN_CATS.find(c => c.id === pin.cat) || PIN_CATS[5];
             return (
               <div key={pin.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${T.surfaceBorder}` }}>
-                <div onClick={() => { setShowLayers(false); mapInst.current.flyTo([pin.lat, pin.lng], 14, { duration: 0.8 }); }} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
+                <div onClick={() => { if (pin.lat == null) return; setShowLayers(false); mapInst.current.flyTo([pin.lat, pin.lng], 14, { duration: 0.8 }); setTimeout(() => pinMarkers.current[pin.id]?.openPopup(), 850); }} style={{ flex: 1, minWidth: 0, cursor: "pointer", opacity: pin.lat == null ? 0.6 : 1 }}>
                   <div style={{ fontSize: 14, fontWeight: 600 }}>{cat.icon} {pin.name}</div>
                   {pin.note && <div style={{ fontSize: 12, color: T.muted }}>{pin.note}</div>}
                 </div>
-                <button onClick={() => { if (confirm(`למחוק את "${pin.name}"?`)) onPinsChange(pins.filter(p => p.id !== pin.id)); }} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18 }}>×</button>
+                <button onClick={() => { setShowLayers(false); setEditPin(pin); }} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 15 }}>✏️</button>
               </div>
             );
           })}
@@ -600,9 +655,175 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
   );
 }
 
+// ─── PLACES (pins with a country / day) ──────────────────────────────────────
+
+const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const fmtDay = iso => new Date(iso + "T00:00").toLocaleDateString("he-IL", { weekday: "short", day: "numeric", month: "numeric" });
+function countryDays(countries, name) {
+  const i = countries.findIndex(c => c.name === name);
+  if (i < 0) return [];
+  const { start, end } = getDates(countries)[i];
+  const out = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) out.push(isoDay(d));
+  return out;
+}
+function nearestCountry(countries, cities, lat, lng) {
+  let best = null, bestD = Infinity;
+  countries.forEach(c => {
+    const pts = [{ lat: c.lat, lng: c.lng }, ...(cities[c.name] || []).filter(x => x.lat != null)];
+    pts.forEach(pt => { const d = distKm(pt, { lat, lng }); if (d < bestD) { bestD = d; best = c.name; } });
+  });
+  return best || "";
+}
+
+function PlaceForm({ initial, countries, onSave, onClose, onDelete }) {
+  const [f, setF] = useState({ cat: "attraction", name: "", note: "", link: "", country: "", date: "", lat: null, lng: null, maps: "", ...initial });
+  const [locQ, setLocQ] = useState("");
+  const [results, setResults] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const set = p => setF(x => ({ ...x, ...p }));
+  const days = countryDays(countries, f.country);
+
+  const onLoc = v => {
+    setLocQ(v);
+    const c = parseLatLng(v);
+    if (c) { set({ lat: c.lat, lng: c.lng, maps: isUrl(v) ? v.trim() : f.maps }); setResults(null); }
+    else if (isUrl(v)) set({ maps: v.trim() });
+  };
+  const search = async () => {
+    const q = locQ.trim() || f.name.trim();
+    if (!q || isUrl(q)) return;
+    setSearching(true);
+    try { setResults(await geoSearch(q, COUNTRY_CODES[f.country])); } catch { setResults([]); }
+    setSearching(false);
+  };
+  const save = () => {
+    if (!f.name.trim()) return;
+    onSave({ ...f, name: f.name.trim(), note: f.note.trim(), link: f.link.trim() });
+  };
+  const hasLoc = f.lat != null;
+  const label = { fontSize: 12, color: T.muted, margin: "12px 0 6px", fontWeight: 600 };
+
+  return (
+    <Sheet onClose={onClose} title={initial?.id ? "עריכת מקום" : "📍 מקום חדש"}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {PIN_CATS.map(cat => <button key={cat.id} onClick={() => set({ cat: cat.id })} style={chip(f.cat === cat.id, cat.color, { fontSize: 12, padding: "5px 10px" })}>{cat.icon} {cat.label}</button>)}
+      </div>
+      <input value={f.name} onChange={e => set({ name: e.target.value })} placeholder="שם המקום *" style={inputStyle()} />
+
+      <div style={label}>מיקום</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input value={locQ} onChange={e => onLoc(e.target.value)} onKeyDown={e => e.key === "Enter" && search()} placeholder="חיפוש, או הדבקת קישור מגוגל מפות" style={inputStyle({ flex: 1 })} />
+        <button onClick={search} style={{ ...chip(false), padding: "0 14px", borderRadius: 12 }}>{searching ? "⏳" : "🔍"}</button>
+      </div>
+      {results && (
+        <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, marginTop: 6, maxHeight: 200, overflowY: "auto" }}>
+          {results.length === 0 && <div style={{ padding: 10, fontSize: 13, color: T.muted }}>לא נמצא. נסו באנגלית.</div>}
+          {results.map((r, k) => (
+            <div key={k} onClick={() => { set({ lat: r.lat, lng: r.lng, name: f.name || r.name }); setResults(null); setLocQ(r.name); }} style={{ padding: "9px 12px", borderBottom: `1px solid ${T.surfaceBorder}`, cursor: "pointer" }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>📍 {r.name}</div>
+              <div style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.full}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 12, marginTop: 6, color: hasLoc ? T.green : f.maps ? "#fbbf24" : T.muted }}>
+        {hasLoc ? `✓ יש מיקום, יופיע במפה ואפשר לנווט אליו` : f.maps ? "יש קישור לגוגל מפות, אבל בלי נקודה על המפה שלנו. כדי שיופיע במפה, חפשו את המקום או הדביקו קואורדינטות." : "בלי מיקום המקום לא יופיע במפה"}
+        {hasLoc && <button onClick={() => set({ lat: null, lng: null })} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", marginRight: 6 }}>הסר</button>}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>
+        <select value={f.country} onChange={e => set({ country: e.target.value, date: "" })} style={inputStyle()}>
+          <option value="">בלי מדינה</option>
+          {countries.map(c => <option key={c.name} value={c.name}>{c.emoji} {c.name}</option>)}
+        </select>
+        <select value={f.date} onChange={e => set({ date: e.target.value })} style={inputStyle()} disabled={!f.country}>
+          <option value="">📌 כללי, בלי יום</option>
+          {days.map(d => <option key={d} value={d}>{fmtDay(d)}</option>)}
+          {f.date && !days.includes(f.date) && <option value={f.date}>{fmtDay(f.date)}</option>}
+        </select>
+      </div>
+      <input value={f.link} onChange={e => set({ link: e.target.value })} placeholder="🔗 קישור (Booking, אתר, כרטיסים…)" style={inputStyle({ marginTop: 8 })} />
+      <input value={f.note} onChange={e => set({ note: e.target.value })} placeholder="הערה (צ׳ק-אין 15:00, קוד הזמנה…)" style={inputStyle({ marginTop: 8 })} />
+      <button onClick={save} style={primaryBtn({ marginTop: 14 })}>שמור מקום</button>
+      {onDelete && <button onClick={() => { if (confirm(`למחוק את "${f.name}"?`)) onDelete(); }} style={{ width: "100%", marginTop: 8, background: "none", border: `1px solid ${T.surfaceBorder}`, borderRadius: 14, color: T.red, padding: 10, cursor: "pointer", fontFamily: "'Heebo',sans-serif" }}>מחק מקום</button>}
+    </Sheet>
+  );
+}
+
+const smallBtn = { background: "rgba(255,255,255,0.07)", border: `1px solid ${T.surfaceBorder}`, borderRadius: 10, color: T.text, padding: "5px 9px", fontSize: 12, cursor: "pointer", fontFamily: "'Heebo',sans-serif", textDecoration: "none", whiteSpace: "nowrap", display: "inline-block" };
+
+function NavButtons({ place }) {
+  if (place.lat != null) {
+    const n = navLinks(place.lat, place.lng);
+    return <>
+      <a href={n.google} target="_blank" rel="noreferrer" style={smallBtn}>🧭 גוגל מפות</a>
+      <a href={n.waze} target="_blank" rel="noreferrer" style={smallBtn}>🚗 Waze</a>
+    </>;
+  }
+  if (place.maps) return <a href={place.maps} target="_blank" rel="noreferrer" style={smallBtn}>🧭 גוגל מפות</a>;
+  return null;
+}
+
+function PlaceCard({ place, expenses, onEdit, onShowMap }) {
+  const cat = PIN_CATS.find(c => c.id === place.cat) || PIN_CATS[5];
+  const linked = expenses.filter(e => e.placeId === place.id);
+  const sum = linked.reduce((s, e) => s + e.amount, 0);
+  const receipts = linked.filter(e => e.receiptId).length;
+  return (
+    <div style={{ ...card({ marginBottom: 8, padding: "11px 13px" }) }}>
+      <div onClick={onEdit} style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+        <div style={{ width: 36, height: 36, borderRadius: 11, background: cat.color + "22", border: `1px solid ${cat.color}44`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>{cat.icon}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>{place.name}</div>
+          <div style={{ fontSize: 12, color: T.muted }}>{place.date ? `📅 ${fmtDay(place.date)}` : "📌 כללי"}{place.note ? ` · ${place.note}` : ""}</div>
+          {linked.length > 0 && <div style={{ fontSize: 12, color: T.green, marginTop: 2 }}>💰 {money(sum)}{receipts ? ` · 🧾 ${receipts}` : ""}</div>}
+        </div>
+        <span style={{ color: T.muted, fontSize: 14 }}>✏️</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+        <NavButtons place={place} />
+        {place.lat != null && <button onClick={onShowMap} style={smallBtn}>🗺️ במפה</button>}
+        {place.link && <a href={place.link} target="_blank" rel="noreferrer" style={smallBtn}>🔗 קישור</a>}
+      </div>
+    </div>
+  );
+}
+
+function CountryPlaces({ country, countries, pins, setPins, expenses, onShowMap }) {
+  const [editing, setEditing] = useState(null); // null | {} new | pin
+  const list = pins.filter(p => p.country === country.name)
+    .sort((a, b) => (a.date || "") < (b.date || "") ? -1 : (a.date || "") > (b.date || "") ? 1 : 0);
+  const general = list.filter(p => !p.date);
+  const byDay = list.filter(p => p.date);
+  const save = data => {
+    if (editing?.id) setPins(pins.map(p => (p.id === editing.id ? { ...p, ...data } : p)));
+    else setPins([...pins, { ...data, id: Date.now() }]);
+    setEditing(null);
+  };
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ flex: 1, fontSize: 14, fontWeight: 700 }}>📍 מקומות ({list.length})</div>
+        <button onClick={() => setEditing({ country: country.name })} style={chip(false, T.primary, { fontSize: 12 })}>+ מקום</button>
+      </div>
+      {list.length === 0 && <div style={{ fontSize: 13, color: T.muted, marginBottom: 8 }}>לינות, אטרקציות, טרקים… אפשר לשייך ליום מסוים או סתם למדינה.</div>}
+      {general.map(p => <PlaceCard key={p.id} place={p} expenses={expenses} onEdit={() => setEditing(p)} onShowMap={() => onShowMap(p)} />)}
+      {byDay.map((p, k) => (
+        <div key={p.id}>
+          {(k === 0 || byDay[k - 1].date !== p.date) && <div style={{ fontSize: 12, color: T.muted, fontWeight: 700, margin: "10px 2px 6px" }}>📅 {fmtDay(p.date)}</div>}
+          <PlaceCard place={p} expenses={expenses} onEdit={() => setEditing(p)} onShowMap={() => onShowMap(p)} />
+        </div>
+      ))}
+      {editing && <PlaceForm initial={editing} countries={countries} onSave={save} onClose={() => setEditing(null)}
+        onDelete={editing.id ? () => { setPins(pins.filter(p => p.id !== editing.id)); setEditing(null); } : null} />}
+    </div>
+  );
+}
+
 // ─── PLAN SCREEN ─────────────────────────────────────────────────────────────
 
-function PlanScreen({ countries, setCountries, cities, setCities, notes, setNotes }) {
+function PlanScreen({ countries, setCountries, cities, setCities, notes, setNotes, pins, setPins, expenses, onShowMap }) {
   const [view, setView] = useState("overview"); // "overview" | countryName
   const dates = getDates(countries);
   const totalWeeks = countries.reduce((s, c) => s + c.weeks, 0);
@@ -684,6 +905,8 @@ function PlanScreen({ countries, setCountries, cities, setCities, notes, setNote
             <button onClick={() => { addCity(activeC.name, newCity); setNewCity(""); }} style={{ background: T.primaryDim, border: `1px solid ${T.primaryBorder}`, borderRadius: 8, color: T.primary, padding: "8px 14px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontWeight: 700, fontSize: 14 }}>+</button>
           </div>
         </div>
+
+        <CountryPlaces country={activeC} countries={countries} pins={pins} setPins={setPins} expenses={expenses} onShowMap={onShowMap} />
 
         {/* Notes */}
         <div style={{ marginBottom: 16 }}>
@@ -850,9 +1073,9 @@ function ReceiptsFolder({ expenses, onClose, onOpen }) {
   );
 }
 
-const emptyExpense = () => ({ amount: "", cat: "food", desc: "", date: new Date().toISOString().split("T")[0], country: "יוון", paidBy: "person1", split: "equal", p1Share: "", receiptId: null });
+const emptyExpense = () => ({ amount: "", cat: "food", desc: "", date: new Date().toISOString().split("T")[0], country: "יוון", paidBy: "person1", split: "equal", p1Share: "", receiptId: null, placeId: null });
 
-function ExpenseForm({ initial, countries, persons, onSave, onCancel }) {
+function ExpenseForm({ initial, countries, persons, pins, onSave, onCancel }) {
   const [form, setForm] = useState(initial);
   const [uploading, setUploading] = useState(false);
   const [newReceipts, setNewReceipts] = useState([]); // added in this form session
@@ -904,6 +1127,17 @@ function ExpenseForm({ initial, countries, persons, onSave, onCancel }) {
         {countries.map(c => <option key={c.name} value={c.name}>{c.emoji} {c.name}</option>)}
       </select>
 
+      {(() => {
+        const opts = pins.filter(p => p.country === form.country || p.id === form.placeId);
+        if (!opts.length) return null;
+        return (
+          <select value={form.placeId || ""} onChange={e => set({ placeId: e.target.value ? Number(e.target.value) : null })} style={inputStyle({ marginTop: 8 })}>
+            <option value="">📍 לשייך למקום? (לא חובה)</option>
+            {opts.map(p => <option key={p.id} value={p.id}>{(PIN_CATS.find(c => c.id === p.cat) || PIN_CATS[5]).icon} {p.name}{p.date ? ` · ${fmtDay(p.date)}` : ""}</option>)}
+          </select>
+        );
+      })()}
+
       <div style={label}>מי שילם?</div>
       <Segmented value={form.paidBy || ""} onChange={v => set({ paidBy: v })} options={[{ id: "person1", label: persons[0] }, { id: "person2", label: persons[1] }]} />
 
@@ -937,7 +1171,7 @@ function ExpenseForm({ initial, countries, persons, onSave, onCancel }) {
   );
 }
 
-function BudgetScreen({ countries, expenses, setExpenses, persons }) {
+function BudgetScreen({ countries, expenses, setExpenses, persons, pins }) {
   const [editing, setEditing] = useState(null); // null | "new" | expense
   const [filterPerson, setFilterPerson] = useState("all");
   const [viewReceipt, setViewReceipt] = useState(null);
@@ -1049,7 +1283,7 @@ function BudgetScreen({ countries, expenses, setExpenses, persons }) {
           <ExpenseForm
             key={editing === "new" ? "new" : editing.id}
             initial={editing === "new" ? emptyExpense() : { ...emptyExpense(), ...editing, paidBy: expPayer(editing), split: expSplit(editing), p1Share: editing.p1Share ?? "", amount: String(editing.amount) }}
-            countries={countries} persons={persons} onSave={saveExpense} onCancel={() => setEditing(null)} />
+            countries={countries} persons={persons} pins={pins} onSave={saveExpense} onCancel={() => setEditing(null)} />
         </div>
       ) : (
         <button onClick={() => setEditing("new")} style={primaryBtn({ marginBottom: 14 })}>+ הוסף הוצאה</button>
@@ -1080,7 +1314,7 @@ function BudgetScreen({ countries, expenses, setExpenses, persons }) {
               <div style={{ width: 40, height: 40, borderRadius: 12, background: cat.color + "22", border: `1px solid ${cat.color}44`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{cat.icon}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.desc || cat.label}</div>
-                <div style={{ fontSize: 11, color: T.muted }}>{fmtDate(exp.date)} · {exp.country}</div>
+                <div style={{ fontSize: 11, color: T.muted }}>{fmtDate(exp.date)} · {exp.country}{exp.placeId && pins.find(p => p.id === exp.placeId) ? ` · 📍 ${pins.find(p => p.id === exp.placeId).name}` : ""}</div>
                 <div style={{ fontSize: 11, color: payer ? T.muted : "#fbbf24" }}>{payer ? `שילם ${payer === "person1" ? persons[0] : persons[1]}` : "מי שילם?"} · {splitLabel}</div>
               </div>
               {exp.receiptId && <ReceiptThumb id={exp.receiptId} size={40} onClick={ev => { ev.stopPropagation(); setViewReceipt(exp); }} />}
@@ -1166,7 +1400,7 @@ function CompareGroup({ g, persons, update, remove, pins, setPins }) {
     const exists = pins.some(p => p.id === o.pinId);
     if (exists) return;
     const pinId = Date.now();
-    setPins([...pins, { id: pinId, name: o.name, note: [o.price ? `€${o.price}` : "", o.note].filter(Boolean).join(" · "), cat: g.cat, lat: o.lat, lng: o.lng }]);
+    setPins([...pins, { id: pinId, name: o.name, note: [o.price ? `€${o.price}` : "", o.note].filter(Boolean).join(" · "), cat: g.cat, lat: o.lat, lng: o.lng, country: g.country || "", date: "", link: o.link || "" }]);
     setOptions(os => os.map(x => (x.id === o.id ? { ...x, pinId } : x)));
   };
   const linkBtn = { background: "rgba(255,255,255,0.07)", border: `1px solid ${T.surfaceBorder}`, borderRadius: 10, color: T.text, padding: "5px 9px", fontSize: 12, cursor: "pointer", fontFamily: "'Heebo',sans-serif", textDecoration: "none", whiteSpace: "nowrap" };
@@ -1300,26 +1534,28 @@ function CompareScreen({ countries, compares, setCompares, persons, pins, setPin
 // ─── GEAR SCREEN ──────────────────────────────────────────────────────────────
 
 // Turn a pasted list (from notes / another chat) into gear items.
-// Headings: "# x", "x:", "**x**". Items: bullets, numbers, checkboxes or plain lines.
+// Headings: "# x", "x:", "**x**", or – when the list uses bullets – any short line without a bullet.
+const BULLET_RE = /^([-*•–▪◦]|\d+[.)]|\[[ xX]\]|☐|☑|✅|✔)\s*/;
 function parseGearList(text, knownCats) {
   const out = [];
   let cat = null;
+  const bare = x => x.replace(/[^\p{L}\p{N} ]/gu, "").trim();
   const findCat = h => {
-    const bare = x => x.replace(/[^\p{L}\p{N} ]/gu, "").trim();
     const hb = bare(h);
     return knownCats.find(k => { const kb = bare(k); return kb && hb && (hb.includes(kb) || kb.includes(hb)); }) || (/^\p{L}/u.test(h) ? `📦 ${h}` : h);
   };
-  for (let raw of text.split(/\r?\n/)) {
-    let line = raw.trim();
-    if (!line) continue;
-    const isBullet = /^([-*•–▪◦]|\d+[.)]|\[[ xX]\]|☐|☑|✅|✔)\s*/.test(line);
-    const heading = !isBullet && (/^#+\s*/.test(line) || /:$/.test(line) || /^\*\*.+\*\*$/.test(line));
-    if (heading) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const usesBullets = lines.filter(l => BULLET_RE.test(l)).length >= Math.max(2, lines.length * 0.3);
+  for (let line of lines) {
+    const isBullet = BULLET_RE.test(line);
+    const explicitHeading = !isBullet && (/^#+\s*/.test(line) || /:$/.test(line) || /^\*\*.+\*\*:?$/.test(line));
+    if (explicitHeading || (usesBullets && !isBullet)) {
       const h = line.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/:$/, "").trim();
-      if (h) cat = findCat(h);
+      // long sentences between bullets are explanations, not categories
+      if (h && h.length <= 40) cat = findCat(h);
       continue;
     }
-    line = line.replace(/^([-*•–▪◦]|\d+[.)]|\[[ xX]\]|☐|☑|✅|✔)\s*/, "").replace(/^\[[ xX]\]\s*/, "");
+    line = line.replace(BULLET_RE, "").replace(/^\[[ xX]\]\s*/, "");
     let link = "";
     const md = line.match(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/);
     if (md) { link = md[2]; line = line.replace(md[0], /^(קישור|לינק|link|here|כאן|לכאן)$/i.test(md[1].trim()) ? "" : md[1]); }
@@ -1332,8 +1568,9 @@ function parseGearList(text, knownCats) {
 }
 const normText = t => String(t).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
-function GearImport({ onClose, onImport }) {
+function GearImport({ onClose, onImport, persons, defaultOwner }) {
   const [text, setText] = useState("");
+  const [owner, setOwner] = useState(defaultOwner);
   const [result, setResult] = useState(null);
   return (
     <Sheet onClose={onClose} title="📋 ייבוא רשימת ציוד">
@@ -1341,62 +1578,120 @@ function GearImport({ onClose, onImport }) {
         <div style={{ textAlign: "center", padding: "10px 0" }}>
           <div style={{ fontSize: 40 }}>✅</div>
           <div style={{ fontWeight: 800, fontSize: 17, margin: "6px 0" }}>נוספו {result.added} פריטים חדשים</div>
-          <div style={{ fontSize: 13, color: T.muted }}>{result.existing} כבר היו ברשימה{result.links ? `, ול-${result.links} מהם נוסף קישור` : ""}. שום דבר לא נמחק.</div>
+          <div style={{ fontSize: 13, color: T.muted }}>{result.existing} כבר היו ברשימה{result.links ? `, ול-${result.links} מהם נוסף קישור` : ""}.</div>
+          {result.cats.length > 0 && <div style={{ fontSize: 13, color: T.muted, marginTop: 6 }}>קטגוריות: {result.cats.join(", ")}</div>}
           <button onClick={onClose} style={primaryBtn({ marginTop: 16 })}>סגור</button>
         </div>
       ) : (
         <>
-          <div style={{ fontSize: 13, color: T.muted, marginBottom: 8 }}>מדביקים את הרשימה (למשל מהצ׳אט השני). כותרות כמו "ביגוד:" הופכות לקטגוריות, וקישורים נשמרים ליד הפריט. פריטים שכבר קיימים לא ייכפלו, אז אפשר להדביק שוב כל פעם שהרשימה מתעדכנת.</div>
-          <textarea value={text} onChange={e => setText(e.target.value)} placeholder={"ביגוד:\n- חולצת דרייפיט x3\n- מעיל גשם https://...\n\nתרמיל:\n- תיק 55 ליטר"} style={inputStyle({ minHeight: 200, resize: "vertical" })} />
-          <button onClick={() => setResult(onImport(text))} disabled={!text.trim()} style={primaryBtn({ marginTop: 10, opacity: text.trim() ? 1 : 0.5 })}>ייבא</button>
+          <div style={{ fontSize: 12, color: T.muted, marginBottom: 6, fontWeight: 600 }}>של מי הרשימה?</div>
+          <Segmented value={owner} onChange={setOwner} size={13} options={[{ id: "person1", label: persons[0] }, { id: "person2", label: persons[1] }, { id: "shared", label: "שנינו" }]} />
+          <div style={{ fontSize: 13, color: T.muted, margin: "10px 0 8px" }}>מדביקים את הרשימה. שורה בלי תבליט (או שמסתיימת ב-":") הופכת לקטגוריה, וקישורים נשמרים ליד הפריט. פריטים שכבר קיימים לא ייכפלו.</div>
+          <textarea value={text} onChange={e => setText(e.target.value)} placeholder={"👕 ביגוד\n- חולצת דרייפיט x3\n- מעיל גשם https://...\n\n🎒 תרמיל\n- תיק 55 ליטר"} style={inputStyle({ minHeight: 190, resize: "vertical" })} />
+          <button onClick={() => setResult(onImport(text, owner))} disabled={!text.trim()} style={primaryBtn({ marginTop: 10, opacity: text.trim() ? 1 : 0.5 })}>ייבא</button>
         </>
       )}
     </Sheet>
   );
 }
 
-function GearItemEdit({ item, meta, onSave, onDelete, onClose }) {
+function GearItemEdit({ item, meta, cats, persons, onSave, onDelete, onClose }) {
   const [link, setLink] = useState(meta?.link || "");
   const [note, setNote] = useState(meta?.note || "");
+  const [cat, setCat] = useState(item.cat);
+  const [newCat, setNewCat] = useState("");
+  const [owner, setOwner] = useState(item.owner || "shared");
+  const custom = item.id.startsWith("custom_");
+  const label = { fontSize: 12, color: T.muted, margin: "12px 0 6px", fontWeight: 600 };
   return (
     <Sheet onClose={onClose} title={item.text}>
       <input value={link} onChange={e => setLink(e.target.value)} placeholder="🔗 קישור למוצר (למשל מה שרצינו לקנות)" style={inputStyle()} />
       <input value={note} onChange={e => setNote(e.target.value)} placeholder="הערה (מידה, צבע, מחיר…)" style={inputStyle({ marginTop: 8 })} />
-      <button onClick={() => { onSave({ link: link.trim(), note: note.trim() }); onClose(); }} style={primaryBtn({ marginTop: 12 })}>שמור</button>
-      {onDelete && <button onClick={() => { if (confirm(`למחוק את "${item.text}" מהרשימה?`)) { onDelete(); onClose(); } }} style={{ width: "100%", marginTop: 8, background: "none", border: `1px solid ${T.surfaceBorder}`, borderRadius: 14, color: T.red, padding: 10, cursor: "pointer", fontFamily: "'Heebo',sans-serif" }}>מחק פריט</button>}
+      <div style={label}>קטגוריה</div>
+      <select value={cat} onChange={e => setCat(e.target.value)} style={inputStyle()}>
+        {cats.map(c => <option key={c} value={c}>{c}</option>)}
+        <option value="__new">+ קטגוריה חדשה…</option>
+      </select>
+      {cat === "__new" && <input value={newCat} onChange={e => setNewCat(e.target.value)} placeholder="שם הקטגוריה" style={inputStyle({ marginTop: 8 })} />}
+      {custom && <>
+        <div style={label}>של מי הפריט?</div>
+        <Segmented value={owner} onChange={setOwner} size={13} options={[{ id: "person1", label: persons[0] }, { id: "person2", label: persons[1] }, { id: "shared", label: "שנינו" }]} />
+      </>}
+      <button onClick={() => {
+        const finalCat = cat === "__new" ? (newCat.trim() ? (/^\p{L}/u.test(newCat.trim()) ? `📦 ${newCat.trim()}` : newCat.trim()) : item.cat) : cat;
+        onSave({ link: link.trim(), note: note.trim(), cat: finalCat, owner: owner === "shared" ? undefined : owner });
+        onClose();
+      }} style={primaryBtn({ marginTop: 14 })}>שמור</button>
+      <button onClick={() => { if (confirm(`למחוק את "${item.text}" מהרשימה?`)) { onDelete(); onClose(); } }} style={{ width: "100%", marginTop: 8, background: "none", border: `1px solid ${T.surfaceBorder}`, borderRadius: 14, color: T.red, padding: 10, cursor: "pointer", fontFamily: "'Heebo',sans-serif" }}>מחק פריט</button>
     </Sheet>
   );
 }
 
-const gearCats = customGear => [...Object.keys(GEAR_ITEMS), ...[...new Set(customGear.map(i => i.cat))].filter(c => !GEAR_ITEMS[c])];
-const gearAll = customGear => [...Object.values(GEAR_ITEMS).flat(), ...customGear];
+// All gear items with their current category, without deleted ones.
+// pid: only items for that person (shared + theirs); omit for everything.
+function gearItems(customGear, gearMeta, gearHidden, pid) {
+  const builtin = Object.entries(GEAR_ITEMS).flatMap(([cat, items]) => items.map(i => ({ ...i, cat })));
+  return [...builtin, ...customGear]
+    .filter(i => !gearHidden[i.id] && (!pid || !i.owner || i.owner === pid))
+    .map(i => ({ ...i, cat: gearMeta[i.id]?.cat || i.cat }));
+}
+const gearCatList = items => [...new Set([...Object.keys(GEAR_ITEMS), ...items.map(i => i.cat)])];
 
-function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMeta, setGearMeta, persons, activeUser, setActiveUser }) {
+function GearManage({ items, persons, activeUser, onDeleteCat, onDeleteCustom, onRestore, onClearChecks, onClose, hiddenCount }) {
+  const cats = gearCatList(items).filter(c => items.some(i => i.cat === c));
+  const customCount = items.filter(i => i.id.startsWith("custom_")).length;
+  const row = { display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: `1px solid ${T.surfaceBorder}` };
+  const danger = { background: "none", border: `1px solid ${T.surfaceBorder}`, borderRadius: 10, color: T.red, padding: "5px 10px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 12 };
+  const big = (color = T.text) => ({ width: "100%", textAlign: "right", background: "rgba(255,255,255,0.05)", border: `1px solid ${T.surfaceBorder}`, borderRadius: 14, color, padding: "12px 14px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 14, marginTop: 8 });
+  return (
+    <Sheet onClose={onClose} title="⚙️ ניהול רשימת הציוד">
+      <div style={{ fontSize: 12, color: T.muted, fontWeight: 600, marginBottom: 4 }}>קטגוריות</div>
+      {cats.map(c => (
+        <div key={c} style={row}>
+          <div style={{ flex: 1, fontSize: 14 }}>{c} <span style={{ color: T.muted, fontSize: 12 }}>({items.filter(i => i.cat === c).length})</span></div>
+          <button onClick={() => { if (confirm(`למחוק את הקטגוריה "${c}" וכל הפריטים שבה?`)) onDeleteCat(c); }} style={danger}>מחק</button>
+        </div>
+      ))}
+      <div style={{ fontSize: 12, color: T.muted, fontWeight: 600, margin: "16px 0 0" }}>איפוס</div>
+      <button onClick={() => { if (confirm(`לנקות את כל הסימונים של ${persons[activeUser === "person1" ? 0 : 1]}?`)) onClearChecks(); }} style={big()}>⬜ לנקות את הסימונים של {persons[activeUser === "person1" ? 0 : 1]}</button>
+      {hiddenCount > 0 && <button onClick={onRestore} style={big()}>↩️ להחזיר {hiddenCount} פריטים מקוריים שנמחקו</button>}
+      <button disabled={!customCount} onClick={() => { if (confirm(`למחוק את כל ${customCount} הפריטים שהוספתם או ייבאתם? אי אפשר לבטל.`)) onDeleteCustom(); }} style={{ ...big(T.red), opacity: customCount ? 1 : 0.4 }}>🗑️ למחוק את כל הפריטים שהוספתם/ייבאתם ({customCount})</button>
+    </Sheet>
+  );
+}
+
+function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMeta, setGearMeta, gearHidden, setGearHidden, persons, activeUser, setActiveUser }) {
   const [expanded, setExpanded] = useState("📄 מסמכים");
   const [newItem, setNewItem] = useState("");
   const [newCat, setNewCat] = useState("📄 מסמכים");
+  const [newOwner, setNewOwner] = useState("shared");
   const [editItem, setEditItem] = useState(null);
   const [showImport, setShowImport] = useState(false);
+  const [showManage, setShowManage] = useState(false);
 
+  const pIdx = activeUser === "person1" ? 0 : 1;
   const checked = checkedBy[activeUser] || {};
   const other = activeUser === "person1" ? "person2" : "person1";
-  const cats = gearCats(customGear);
-  const all = gearAll(customGear);
-  const doneOf = pid => all.filter(i => checkedBy[pid]?.[i.id]).length;
-  const totalDone = doneOf(activeUser);
-  const pct = all.length ? Math.round((totalDone / all.length) * 100) : 0;
+  const everything = gearItems(customGear, gearMeta, gearHidden);
+  const mine = gearItems(customGear, gearMeta, gearHidden, activeUser);
+  const theirs = gearItems(customGear, gearMeta, gearHidden, other);
+  const cats = gearCatList(everything);
+  const totalDone = mine.filter(i => checked[i.id]).length;
+  const otherDone = theirs.filter(i => checkedBy[other]?.[i.id]).length;
+  const pct = mine.length ? Math.round((totalDone / mine.length) * 100) : 0;
   const toggle = id => setCheckedBy(p => ({ ...p, [activeUser]: { ...(p[activeUser] || {}), [id]: !p[activeUser]?.[id] } }));
 
   const addCustom = () => {
     if (!newItem.trim()) return;
     const id = `custom_${Date.now()}`;
-    setCustomGear(p => [...p, { id, text: newItem.trim(), cat: newCat }]);
+    setCustomGear(p => [...p, { id, text: newItem.trim(), cat: newCat, ...(newOwner !== "shared" ? { owner: activeUser } : {}) }]);
     setNewItem("");
   };
 
-  const importList = text => {
+  const importList = (text, owner) => {
+    const pool = owner === "shared" ? everything : gearItems(customGear, gearMeta, gearHidden, owner);
     const items = parseGearList(text, cats);
-    const byNorm = new Map(all.map(i => [normText(i.text), i]));
+    const byNorm = new Map(pool.map(i => [normText(i.text), i]));
     const added = [], metaPatch = {};
     let existing = 0, links = 0;
     items.forEach((it, n) => {
@@ -1408,14 +1703,27 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
         return;
       }
       const id = `custom_${Date.now()}_${n}`;
-      const item = { id, text: it.text, cat: it.cat };
+      const item = { id, text: it.text, cat: it.cat, ...(owner !== "shared" ? { owner } : {}) };
       byNorm.set(key, item);
       added.push(item);
       if (it.link) metaPatch[id] = { link: it.link };
     });
     if (added.length) setCustomGear(p => [...p, ...added]);
     if (Object.keys(metaPatch).length) setGearMeta(p => ({ ...p, ...metaPatch }));
-    return { added: added.length, existing, links };
+    if (owner !== "shared" && owner !== activeUser) setActiveUser(owner);
+    if (added[0]) setExpanded(added[0].cat);
+    return { added: added.length, existing, links, cats: [...new Set(added.map(a => a.cat))] };
+  };
+
+  const deleteItem = item => {
+    if (item.id.startsWith("custom_")) setCustomGear(p => p.filter(g => g.id !== item.id));
+    else setGearHidden(h => ({ ...h, [item.id]: true }));
+  };
+  const deleteCat = cat => {
+    const inCat = everything.filter(i => i.cat === cat);
+    const ids = new Set(inCat.map(i => i.id));
+    setCustomGear(p => p.filter(g => !ids.has(g.id)));
+    setGearHidden(h => ({ ...h, ...Object.fromEntries(inCat.filter(i => !i.id.startsWith("custom_")).map(i => [i.id, true])) }));
   };
 
   return (
@@ -1434,27 +1742,30 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: T.green }}>{pct}%</div>
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 800, fontSize: 16 }}>הציוד של {persons[activeUser === "person1" ? 0 : 1]}</div>
-          <div style={{ fontSize: 13, color: T.muted }}>{totalDone} מתוך {all.length} פריטים</div>
-          <div style={{ fontSize: 12, color: T.muted }}>{persons[other === "person1" ? 0 : 1]}: {doneOf(other)}/{all.length}</div>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>הציוד של {persons[pIdx]}</div>
+          <div style={{ fontSize: 13, color: T.muted }}>{totalDone} מתוך {mine.length} פריטים</div>
+          <div style={{ fontSize: 12, color: T.muted }}>{persons[1 - pIdx]}: {otherDone}/{theirs.length}</div>
         </div>
-        <button onClick={() => setShowImport(true)} style={chip(false, T.primary, { fontSize: 12 })}>📋 ייבוא</button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <button onClick={() => setShowImport(true)} style={chip(false, T.primary, { fontSize: 12 })}>📋 ייבוא</button>
+          <button onClick={() => setShowManage(true)} style={chip(false, T.primary, { fontSize: 12 })}>⚙️ ניהול</button>
+        </div>
       </div>
 
       {/* Gear categories */}
       {cats.map(cat => {
-        const allCatItems = [...(GEAR_ITEMS[cat] || []), ...customGear.filter(i => i.cat === cat)];
+        const allCatItems = mine.filter(i => i.cat === cat);
         if (!allCatItems.length) return null;
         const catDone = allCatItems.filter(i => checked[i.id]).length;
         const isOpen = expanded === cat;
         return (
-          <div key={cat} style={{ marginBottom: 8, ...card({ padding: 0, overflow: "hidden", marginBottom: 8, border: `1px solid ${isOpen ? T.primaryBorder : T.surfaceBorder}` }) }}>
+          <div key={cat} style={{ ...card({ padding: 0, overflow: "hidden", marginBottom: 8, border: `1px solid ${isOpen ? T.primaryBorder : T.surfaceBorder}` }) }}>
             <button onClick={() => setExpanded(isOpen ? null : cat)} style={{
               width: "100%", background: isOpen ? T.primaryDim : "none", border: "none", color: T.text,
               fontFamily: "'Heebo',sans-serif", padding: "13px 16px", cursor: "pointer",
               display: "flex", alignItems: "center", justifyContent: "space-between",
             }}>
-              <span style={{ fontWeight: 700, fontSize: 15 }}>{cat}</span>
+              <span style={{ fontWeight: 700, fontSize: 15, textAlign: "right" }}>{cat}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ background: catDone === allCatItems.length ? "rgba(52,211,153,0.2)" : "rgba(255,255,255,0.08)", color: catDone === allCatItems.length ? T.green : T.muted, borderRadius: 20, padding: "2px 10px", fontSize: 12 }}>{catDone}/{allCatItems.length}</span>
                 <span style={{ color: T.muted, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .3s" }}>⌄</span>
@@ -1472,7 +1783,7 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
                           {on && <span style={{ color: "#06281c", fontSize: 13, fontWeight: 900 }}>✓</span>}
                         </div>
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 14, textDecoration: on ? "line-through" : "none" }}>{item.text}</div>
+                          <div style={{ fontSize: 14, textDecoration: on ? "line-through" : "none" }}>{item.text}{item.owner && <span style={{ fontSize: 11, color: T.muted }}> · רק שלי</span>}</div>
                           {meta?.note && <div style={{ fontSize: 12, color: T.muted }}>{meta.note}</div>}
                         </div>
                       </div>
@@ -1489,8 +1800,11 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
 
       {/* Add custom item */}
       <div style={{ ...card({ marginTop: 8 }) }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>+ הוסף פריט (לשניכם)</div>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>+ הוסף פריט</div>
         <input value={newItem} onChange={e => setNewItem(e.target.value)} onKeyDown={e => e.key === "Enter" && addCustom()} placeholder="שם הפריט..." style={inputStyle({ marginBottom: 8 })} />
+        <div style={{ marginBottom: 8 }}>
+          <Segmented value={newOwner} onChange={setNewOwner} size={13} options={[{ id: "shared", label: "לשנינו" }, { id: "mine", label: `רק ל${persons[pIdx]}` }]} />
+        </div>
         <div style={{ display: "flex", gap: 8 }}>
           <select value={newCat} onChange={e => setNewCat(e.target.value)} style={inputStyle({ flex: 1 })}>
             {cats.map(k => <option key={k} value={k}>{k}</option>)}
@@ -1499,17 +1813,26 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
         </div>
       </div>
 
-      {showImport && <GearImport onClose={() => setShowImport(false)} onImport={importList} />}
-      {editItem && <GearItemEdit item={editItem} meta={gearMeta[editItem.id]} onClose={() => setEditItem(null)}
-        onSave={m => setGearMeta(p => ({ ...p, [editItem.id]: m }))}
-        onDelete={editItem.id.startsWith("custom_") ? () => setCustomGear(p => p.filter(g => g.id !== editItem.id)) : null} />}
+      {showImport && <GearImport onClose={() => setShowImport(false)} onImport={importList} persons={persons} defaultOwner={activeUser} />}
+      {showManage && <GearManage items={everything} persons={persons} activeUser={activeUser} hiddenCount={Object.keys(gearHidden).filter(k => gearHidden[k]).length}
+        onDeleteCat={deleteCat}
+        onDeleteCustom={() => setCustomGear([])}
+        onRestore={() => setGearHidden({})}
+        onClearChecks={() => setCheckedBy(p => ({ ...p, [activeUser]: {} }))}
+        onClose={() => setShowManage(false)} />}
+      {editItem && <GearItemEdit item={editItem} meta={gearMeta[editItem.id]} cats={cats} persons={persons} onClose={() => setEditItem(null)}
+        onSave={({ link, note, cat, owner }) => {
+          setGearMeta(p => ({ ...p, [editItem.id]: { ...(p[editItem.id] || {}), link, note, cat } }));
+          if (editItem.id.startsWith("custom_")) setCustomGear(p => p.map(g => { if (g.id !== editItem.id) return g; const { owner: _o, ...rest } = g; return owner ? { ...rest, owner } : rest; }));
+        }}
+        onDelete={() => deleteItem(editItem)} />}
     </div>
   );
 }
 
 // ─── PERSONAL SCREEN ──────────────────────────────────────────────────────────
 
-function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expenses, personalNotes, setPersonalNotes, countries, gearCheckedBy, customGear, onGoGear }) {
+function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expenses, personalNotes, setPersonalNotes, countries, gearCheckedBy, customGear, gearMeta, gearHidden, onGoGear }) {
   const [editNames, setEditNames] = useState(false);
   const [tmpNames, setTmpNames] = useState([...persons]);
 
@@ -1559,7 +1882,7 @@ function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expens
 
       {/* My gear */}
       {(() => {
-        const all = gearAll(customGear);
+        const all = gearItems(customGear, gearMeta, gearHidden, activeUser);
         const mine = gearCheckedBy[activeUser] || {};
         const done = all.filter(i => mine[i.id]).length;
         const left = all.filter(i => !mine[i.id]);
@@ -1611,6 +1934,7 @@ export default function TripPlanner() {
   // Per-person packing. Before this existed there was one shared checklist (gearChecked) – copy it to both.
   const [gearCheckedBy, setGearCheckedBy] = useState(saved?.gearCheckedBy || { person1: { ...(saved?.gearChecked || {}) }, person2: { ...(saved?.gearChecked || {}) } });
   const [gearMeta, setGearMeta] = useState(saved?.gearMeta || {});
+  const [gearHidden, setGearHidden] = useState(saved?.gearHidden || {});
   const [customGear, setCustomGear] = useState(saved?.customGear || []);
   const [persons, setPersons] = useState(saved?.persons || ["אני", "החבר"]);
   const [activeUser, setActiveUser] = useState(saved?.activeUser || "person1");
@@ -1621,11 +1945,11 @@ export default function TripPlanner() {
   const doSave = useCallback(() => {
     persist({
       countryWeeks: Object.fromEntries(countries.map(c => [c.name, c.weeks])),
-      pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, customGear, persons, activeUser, personalNotes, compares,
+      pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares,
     });
     setSavedPulse(true);
     setTimeout(() => setSavedPulse(false), 1200);
-  }, [countries, pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, customGear, persons, activeUser, personalNotes, compares]);
+  }, [countries, pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares]);
 
   useEffect(() => { const t = setTimeout(doSave, 800); return () => clearTimeout(t); }, [doSave]);
 
@@ -1642,6 +1966,8 @@ export default function TripPlanner() {
     { id: "personal", label: "אישי",    icon: "👤" },
   ];
   const tabIdx = TABS.findIndex(t => t.id === tab);
+  const [mapFocus, setMapFocus] = useState(null);
+  const showOnMap = pin => { setMapFocus({ id: pin.id, t: Date.now() }); goTab("map"); };
   const goTab = id => {
     if (id === tab) return;
     setDir(TABS.findIndex(t => t.id === id) > tabIdx ? "left" : "right");
@@ -1670,16 +1996,16 @@ export default function TripPlanner() {
 
       {/* CONTENT */}
       <div style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }}>
-        <div className={tab === "map" ? "map-in" : ""} style={{ position: "absolute", inset: 0, visibility: tab === "map" ? "visible" : "hidden", pointerEvents: tab === "map" ? "auto" : "none" }}>
-          <MapScreen visible={tab === "map"} countries={countries} cities={cities} setCities={setCities} pins={pins} onPinsChange={setPins} tracks={tracks} onTracksChange={setTracks} compares={compares} />
+        <div className="map-in" style={{ position: "absolute", inset: 0, display: tab === "map" ? "block" : "none" }}>
+          <MapScreen visible={tab === "map"} countries={countries} cities={cities} setCities={setCities} pins={pins} onPinsChange={setPins} tracks={tracks} onTracksChange={setTracks} compares={compares} expenses={expenses} focus={mapFocus} />
         </div>
         {tab !== "map" && (
           <div key={tab} className={dir === "left" ? "enter-left" : "enter-right"} style={{ height: "100%", position: "relative", zIndex: 1 }}>
-            {tab === "plan"     && <PlanScreen countries={countries} setCountries={setCountries} cities={cities} setCities={setCities} notes={notes} setNotes={setNotes} />}
-            {tab === "budget"   && <BudgetScreen countries={countries} expenses={expenses} setExpenses={setExpenses} persons={persons} />}
+            {tab === "plan"     && <PlanScreen countries={countries} setCountries={setCountries} cities={cities} setCities={setCities} notes={notes} setNotes={setNotes} pins={pins} setPins={setPins} expenses={expenses} onShowMap={showOnMap} />}
+            {tab === "budget"   && <BudgetScreen countries={countries} expenses={expenses} setExpenses={setExpenses} persons={persons} pins={pins} />}
             {tab === "compare"  && <CompareScreen countries={countries} compares={compares} setCompares={setCompares} persons={persons} pins={pins} setPins={setPins} />}
-            {tab === "gear"     && <GearScreen checkedBy={gearCheckedBy} setCheckedBy={setGearCheckedBy} customGear={customGear} setCustomGear={setCustomGear} gearMeta={gearMeta} setGearMeta={setGearMeta} persons={persons} activeUser={activeUser} setActiveUser={setActiveUser} />}
-            {tab === "personal" && <PersonalScreen persons={persons} setPersons={setPersons} activeUser={activeUser} setActiveUser={setActiveUser} expenses={expenses} personalNotes={personalNotes} setPersonalNotes={setPersonalNotes} countries={countries} gearCheckedBy={gearCheckedBy} customGear={customGear} onGoGear={() => goTab("gear")} />}
+            {tab === "gear"     && <GearScreen checkedBy={gearCheckedBy} setCheckedBy={setGearCheckedBy} customGear={customGear} setCustomGear={setCustomGear} gearMeta={gearMeta} setGearMeta={setGearMeta} gearHidden={gearHidden} setGearHidden={setGearHidden} persons={persons} activeUser={activeUser} setActiveUser={setActiveUser} />}
+            {tab === "personal" && <PersonalScreen persons={persons} setPersons={setPersons} activeUser={activeUser} setActiveUser={setActiveUser} expenses={expenses} personalNotes={personalNotes} setPersonalNotes={setPersonalNotes} countries={countries} gearCheckedBy={gearCheckedBy} customGear={customGear} gearMeta={gearMeta} gearHidden={gearHidden} onGoGear={() => goTab("gear")} />}
           </div>
         )}
       </div>
