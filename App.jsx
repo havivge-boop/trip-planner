@@ -237,15 +237,14 @@ const COUNTRY_CODES = { בולגריה: "bg", יוון: "gr", אלבניה: "al"
 
 // Each style has backup servers: if the first one fails to load, we switch automatically.
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
+// Only servers that need no API key. (CARTO was removed: it started returning "API key required" images.)
 const TILE_STYLES = {
   light: { label: "🗺️", name: "רגילה", sources: [
-    { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", attr: "© OpenStreetMap © CARTO" },
     { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr: "© OpenStreetMap" },
     { url: `${ESRI}/World_Street_Map/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri" },
   ] },
   dark: { label: "🌙", name: "כהה", sources: [
-    { url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", attr: "© OpenStreetMap © CARTO" },
-    { url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri", maxNative: 16 },
+    { url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri", maxNative: 16, labels: `${ESRI}/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}` },
   ] },
   sat: { label: "🛰️", name: "לוויין", sources: [
     { url: `${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri", labels: `${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}` },
@@ -303,7 +302,7 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
   const addModeRef = useRef(false);
   const gpxInputRef = useRef(null);
 
-  const [style, setStyle] = useState(() => { try { return TILE_STYLES[localStorage.getItem("trip-map-style2")] ? localStorage.getItem("trip-map-style2") : "light"; } catch { return "light"; } });
+  const [style, setStyle] = useState(() => { try { return TILE_STYLES[localStorage.getItem("trip-map-style3")] ? localStorage.getItem("trip-map-style3") : "light"; } catch { return "light"; } });
   const [srcIdx, setSrcIdx] = useState(0);
   const [toast, setToast] = useState("");
   const [active, setActive] = useState(-1); // -1 = whole trip
@@ -353,8 +352,8 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
       }
     });
     tileLayer.current = layer.addTo(map);
-    if (src.labels) labelLayer.current = L.tileLayer(src.labels, { maxZoom: 19, pane: "overlayPane" }).addTo(map);
-    try { localStorage.setItem("trip-map-style2", style); } catch {}
+    if (src.labels) labelLayer.current = L.tileLayer(src.labels, { maxZoom: 19, maxNativeZoom: src.maxNative || 19, pane: "overlayPane" }).addTo(map);
+    try { localStorage.setItem("trip-map-style3", style); } catch {}
   }, [style, srcIdx]);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 3500); return () => clearTimeout(t); }, [toast]);
   const cycleStyle = () => {
@@ -684,11 +683,20 @@ function PlaceForm({ initial, countries, onSave, onClose, onDelete }) {
   const set = p => setF(x => ({ ...x, ...p }));
   const days = countryDays(countries, f.country);
 
-  const onLoc = v => {
+  const [resolving, setResolving] = useState(false);
+  const onLoc = async v => {
     setLocQ(v);
     const c = parseLatLng(v);
-    if (c) { set({ lat: c.lat, lng: c.lng, maps: isUrl(v) ? v.trim() : f.maps }); setResults(null); }
-    else if (isUrl(v)) set({ maps: v.trim() });
+    if (c) { set({ lat: c.lat, lng: c.lng, maps: isUrl(v) ? v.trim() : f.maps }); setResults(null); return; }
+    if (isUrl(v)) {
+      set({ maps: v.trim() });
+      setResults(null);
+      setResolving(true);
+      const r = await resolveMapsLink(v, COUNTRY_CODES[f.country]);
+      setResolving(false);
+      if (r?.lat != null) setF(x => ({ ...x, lat: r.lat, lng: r.lng }));
+      if (r?.name) setF(x => (x.name ? x : { ...x, name: r.name.split(",")[0] }));
+    }
   };
   const search = async () => {
     const q = locQ.trim() || f.name.trim();
@@ -728,7 +736,7 @@ function PlaceForm({ initial, countries, onSave, onClose, onDelete }) {
         </div>
       )}
       <div style={{ fontSize: 12, marginTop: 6, color: hasLoc ? T.green : f.maps ? "#fbbf24" : T.muted }}>
-        {hasLoc ? `✓ יש מיקום, יופיע במפה ואפשר לנווט אליו` : f.maps ? "יש קישור לגוגל מפות, אבל בלי נקודה על המפה שלנו. כדי שיופיע במפה, חפשו את המקום או הדביקו קואורדינטות." : "בלי מיקום המקום לא יופיע במפה"}
+        {resolving ? "⏳ מזהה את המיקום מהקישור…" : hasLoc ? `✓ יש מיקום, יופיע במפה ואפשר לנווט אליו` : f.maps ? "לא הצלחתי לזהות מיקום מהקישור. הוא יישמר לניווט, ואפשר לחפש את המקום בשם כדי שיופיע במפה." : "מחפשים לפי שם, או מדביקים קישור מגוגל מפות"}
         {hasLoc && <button onClick={() => set({ lat: null, lng: null })} style={{ background: "none", border: "none", color: T.muted, fontSize: 12, cursor: "pointer", marginRight: 6 }}>הסר</button>}
       </div>
 
@@ -754,18 +762,23 @@ function PlaceForm({ initial, countries, onSave, onClose, onDelete }) {
 const smallBtn = { background: "rgba(255,255,255,0.07)", border: `1px solid ${T.surfaceBorder}`, borderRadius: 10, color: T.text, padding: "5px 9px", fontSize: 12, cursor: "pointer", fontFamily: "'Heebo',sans-serif", textDecoration: "none", whiteSpace: "nowrap", display: "inline-block" };
 
 function NavButtons({ place }) {
-  if (place.lat != null) {
-    const n = navLinks(place.lat, place.lng);
-    return <>
-      <a href={n.google} target="_blank" rel="noreferrer" style={smallBtn}>🧭 גוגל מפות</a>
-      <a href={n.waze} target="_blank" rel="noreferrer" style={smallBtn}>🚗 Waze</a>
-    </>;
-  }
-  if (place.maps) return <a href={place.maps} target="_blank" rel="noreferrer" style={smallBtn}>🧭 גוגל מפות</a>;
-  return null;
+  if (place.lat == null && !place.maps) return null;
+  const google = place.lat != null ? navLinks(place.lat, place.lng).google : place.maps;
+  return <>
+    <a href={google} target="_blank" rel="noreferrer" style={smallBtn}>🧭 גוגל מפות</a>
+    <a href={wazeHref(place.lat, place.lng, place.name)} target="_blank" rel="noreferrer" style={smallBtn}>🚗 Waze</a>
+  </>;
 }
 
-function PlaceCard({ place, expenses, onEdit, onShowMap }) {
+function PlaceCard({ place, expenses, onEdit, onShowMap, onUpdate }) {
+  const [locating, setLocating] = useState(false);
+  const locate = async () => {
+    setLocating(true);
+    const r = await resolveMapsLink(place.maps, COUNTRY_CODES[place.country]);
+    setLocating(false);
+    if (r?.lat != null) onUpdate({ lat: r.lat, lng: r.lng });
+    else alert("לא הצלחתי לזהות מיקום מהקישור. אפשר לערוך ולחפש את המקום בשם.");
+  };
   const cat = PIN_CATS.find(c => c.id === place.cat) || PIN_CATS[5];
   const linked = expenses.filter(e => e.placeId === place.id);
   const sum = linked.reduce((s, e) => s + e.amount, 0);
@@ -784,6 +797,7 @@ function PlaceCard({ place, expenses, onEdit, onShowMap }) {
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
         <NavButtons place={place} />
         {place.lat != null && <button onClick={onShowMap} style={smallBtn}>🗺️ במפה</button>}
+        {place.lat == null && place.maps && onUpdate && <button onClick={locate} style={smallBtn}>{locating ? "⏳" : "📍 הוסף למפה"}</button>}
         {place.link && <a href={place.link} target="_blank" rel="noreferrer" style={smallBtn}>🔗 קישור</a>}
       </div>
     </div>
@@ -808,11 +822,11 @@ function CountryPlaces({ country, countries, pins, setPins, expenses, onShowMap 
         <button onClick={() => setEditing({ country: country.name })} style={chip(false, T.primary, { fontSize: 12 })}>+ מקום</button>
       </div>
       {list.length === 0 && <div style={{ fontSize: 13, color: T.muted, marginBottom: 8 }}>לינות, אטרקציות, טרקים… אפשר לשייך ליום מסוים או סתם למדינה.</div>}
-      {general.map(p => <PlaceCard key={p.id} place={p} expenses={expenses} onEdit={() => setEditing(p)} onShowMap={() => onShowMap(p)} />)}
+      {general.map(p => <PlaceCard key={p.id} place={p} expenses={expenses} onEdit={() => setEditing(p)} onShowMap={() => onShowMap(p)} onUpdate={patch => setPins(pins.map(x => (x.id === p.id ? { ...x, ...patch } : x)))} />)}
       {byDay.map((p, k) => (
         <div key={p.id}>
           {(k === 0 || byDay[k - 1].date !== p.date) && <div style={{ fontSize: 12, color: T.muted, fontWeight: 700, margin: "10px 2px 6px" }}>📅 {fmtDay(p.date)}</div>}
-          <PlaceCard place={p} expenses={expenses} onEdit={() => setEditing(p)} onShowMap={() => onShowMap(p)} />
+          <PlaceCard place={p} expenses={expenses} onEdit={() => setEditing(p)} onShowMap={() => onShowMap(p)} onUpdate={patch => setPins(pins.map(x => (x.id === p.id ? { ...x, ...patch } : x)))} />
         </div>
       ))}
       {editing && <PlaceForm initial={editing} countries={countries} onSave={save} onClose={() => setEditing(null)}
@@ -1350,12 +1364,43 @@ function parseLatLng(str) {
 const isUrl = s => /^https?:\/\//i.test(String(s || "").trim());
 const mapsHref = o => (isUrl(o.maps) ? o.maps.trim() : o.lat != null ? `https://www.google.com/maps/search/?api=1&query=${o.lat},${o.lng}` : null);
 
+// Google Maps share link → coordinates, via our small server helper (api/resolve-maps.js).
+async function resolveMapsLink(url, cc) {
+  const direct = parseLatLng(url);
+  if (direct) return direct;
+  try {
+    const r = await fetch(`/api/resolve-maps?url=${encodeURIComponent(url.trim())}`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (j.lat != null) return { lat: j.lat, lng: j.lng, name: j.name };
+    if (j.name) {
+      const g = (await geoSearch(j.name, cc, 1).catch(() => []))[0] || (await geoSearch(j.name.split(",")[0], cc, 1).catch(() => []))[0];
+      return g ? { lat: g.lat, lng: g.lng, name: j.name } : { name: j.name };
+    }
+  } catch {}
+  return null;
+}
+const wazeHref = (lat, lng, name) => (lat != null ? `https://waze.com/ul?ll=${lat},${lng}&navigate=yes` : name ? `https://waze.com/ul?q=${encodeURIComponent(name)}&navigate=yes` : null);
+
 const emptyOption = () => ({ name: "", price: "", link: "", maps: "", note: "" });
 
 function OptionForm({ initial, onSave, onCancel }) {
   const [f, setF] = useState(initial);
   const set = p => setF(x => ({ ...x, ...p }));
-  const coords = parseLatLng(f.maps);
+  const [resolved, setResolved] = useState(initial.lat != null ? { lat: initial.lat, lng: initial.lng } : null);
+  const [resolving, setResolving] = useState(false);
+  const coords = parseLatLng(f.maps) || resolved;
+  const onMaps = async v => {
+    set({ maps: v });
+    setResolved(null);
+    if (isUrl(v) && !parseLatLng(v)) {
+      setResolving(true);
+      const r = await resolveMapsLink(v);
+      setResolving(false);
+      if (r?.lat != null) setResolved({ lat: r.lat, lng: r.lng });
+      if (r?.name) setF(x => (x.name ? x : { ...x, name: r.name.split(",")[0] }));
+    }
+  };
   const save = () => {
     if (!f.name.trim()) return;
     onSave({ ...f, name: f.name.trim(), lat: coords?.lat ?? null, lng: coords?.lng ?? null });
@@ -1366,8 +1411,8 @@ function OptionForm({ initial, onSave, onCancel }) {
         <input value={f.name} onChange={e => set({ name: e.target.value })} placeholder="שם המקום *" style={inputStyle()} />
         <input type="number" inputMode="decimal" value={f.price} onChange={e => set({ price: e.target.value })} placeholder="מחיר €" style={inputStyle()} />
       </div>
-      <input value={f.maps} onChange={e => set({ maps: e.target.value })} placeholder="📍 קישור מגוגל מפות או קואורדינטות" style={inputStyle({ marginTop: 8 })} />
-      {f.maps && <div style={{ fontSize: 11, marginTop: 4, color: coords ? T.green : T.muted }}>{coords ? `✓ מיקום זוהה (${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}), אפשר להוסיף למפה` : "הקישור יישמר ויפתח את גוגל מפות. כדי להוסיף גם למפה שלנו: בגוגל מפות לוחצים לחיצה ארוכה על המקום ומעתיקים את המספרים."}</div>}
+      <input value={f.maps} onChange={e => onMaps(e.target.value)} placeholder="📍 קישור מגוגל מפות" style={inputStyle({ marginTop: 8 })} />
+      {f.maps && <div style={{ fontSize: 11, marginTop: 4, color: coords ? T.green : T.muted }}>{resolving ? "⏳ מזהה את המיקום מהקישור…" : coords ? "✓ המיקום זוהה, אפשר להוסיף למפה ולנווט" : "לא הצלחתי לזהות מיקום. הקישור יישמר ויפתח את גוגל מפות."}</div>}
       <input value={f.link} onChange={e => set({ link: e.target.value })} placeholder="🔗 קישור (Booking, אתר, AllTrails…)" style={inputStyle({ marginTop: 8 })} />
       <input value={f.note} onChange={e => set({ note: e.target.value })} placeholder="הערה (למשל: כולל ארוחת בוקר)" style={inputStyle({ marginTop: 8 })} />
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -1450,6 +1495,7 @@ function CompareGroup({ g, persons, update, remove, pins, setPins }) {
                     ))}
                     {o.link && <a href={o.link.trim()} target="_blank" rel="noreferrer" style={linkBtn}>🔗 קישור</a>}
                     {href && <a href={href} target="_blank" rel="noreferrer" style={linkBtn}>📍 גוגל מפות</a>}
+                    {(o.lat != null || o.maps) && <a href={wazeHref(o.lat, o.lng, o.name)} target="_blank" rel="noreferrer" style={linkBtn}>🚗 Waze</a>}
                     {o.lat != null && <button onClick={() => toMap(o)} disabled={onMap} style={{ ...linkBtn, opacity: onMap ? 0.55 : 1 }}>{onMap ? "✓ במפה" : "🗺️ למפה"}</button>}
                     <div style={{ flex: 1 }} />
                     <button onClick={() => update({ ...g, chosenId: chosen ? null : o.id })} style={{ ...linkBtn, background: chosen ? "rgba(52,211,153,0.2)" : linkBtn.background }}>{chosen ? "נבחר ✓" : "בחר"}</button>
@@ -1533,26 +1579,62 @@ function CompareScreen({ countries, compares, setCompares, persons, pins, setPin
 
 // ─── GEAR SCREEN ──────────────────────────────────────────────────────────────
 
+// Gear categories we know, with words that identify them. The first four are the built-in ones;
+// the rest are created only when a list needs them, with a fitting icon.
+const GEAR_CAT_DEFS = [
+  { cat: "📄 מסמכים", kw: ["מסמכ", "דרכון", "תעוד", "ביטוח", "ויזה", "רישיון", "eurail", "interrail", "סריק", "כרטיס טיסה", "אשראי", "ארנק", "כסף", "מזומן", "צילום דרכון", "documents", "passport"] },
+  { cat: "🎒 תרמיל", kw: ["תרמיל", "תיק", "ארגונית", "packing", "קוביות", "כיסוי גשם לתיק", "מנעול", "שקית", "שק כביסה", "backpack", "daypack"] },
+  { cat: "👟 ביגוד", kw: ["ביגוד", "בגד", "חולצ", "מכנס", "גרב", "תחתונ", "ג'קט", "ז'קט", "מעיל", "פליז", "דאון", "כובע", "כפפ", "נעל", "הנעלה", "סנדל", "כפכפ", "בגד ים", "שורט", "טייץ", "צעיף", "באף", "buff", "פיג'מה", "סווטשירט", "קפוצ", "גופי", "חזיי", "מגפ", "clothes", "shirt", "pants", "socks", "shoes", "jacket"] },
+  { cat: "💊 בריאות", kw: ["בריאות", "תרופ", "עזרה ראשונה", "פלסטר", "קרם הגנה", "הגנה מהשמש", "יתוש", "דוחה", "אקמול", "נורופן", "כדור", "ויטמין", "תחבוש", "משחה", "אנטיביוטיק", "אלכוג'ל", "מדחום", "health", "meds", "first aid"] },
+  { cat: "🔌 אלקטרוניקה", kw: ["אלקטרוניק", "טכנולוג", "גאדג", "מטען", "כבל", "פאוורבנק", "power bank", "סוללה", "סוללות", "אוזניות", "טלפון", "מצלמה", "גופרו", "gopro", "מתאם", "שעון", "קינדל", "טאבלט", "מחשב", "לפטופ", "usb", "סים", "esim", "רמקול", "electronics", "charger"] },
+  { cat: "🧴 היגיינה", kw: ["היגיינה", "טואלט", "רחצה", "מברשת", "משחת שיניים", "חוט דנטלי", "שמפו", "סבון", "דאודורנט", "מגבת", "גילוח", "ציפורנ", "קוסמטיק", "טמפון", "נייר טואלט", "מגבונ", "מספריים", "toiletries"] },
+  { cat: "⛺ קמפינג", kw: ["קמפינג", "שטח", "אוהל", "שק שינה", "מזרן", "גזייה", "פנס", "סכין", "אולר", "מימיה", "בקבוק", "פילטר", "מקלות הליכה", "כירה", "סיר", "חבל", "קרבינר", "camping", "tent", "sleeping"] },
+  { cat: "🍳 אוכל", kw: ["אוכל", "מטבח", "כלי אוכל", "סכו\"ם", "ספל", "קופסת אוכל", "חטיפ", "תבלינ", "קפה", "food"] },
+  { cat: "🎧 בידור", kw: ["בידור", "ספר", "קלפים", "משחק", "יומן", "מחברת", "entertainment"] },
+];
+const normHe = t => String(t).toLowerCase().replace(/[׳’`]/g, "'").replace(/[״“”]/g, '"');
+const bareName = x => x.replace(/[^\p{L}\p{N} ]/gu, "").trim();
+function classifyGear(text) {
+  const t = normHe(text);
+  let best = null, bestLen = 0;
+  GEAR_CAT_DEFS.forEach(d => d.kw.forEach(k => { if (t.includes(k) && k.length > bestLen) { best = d.cat; bestLen = k.length; } }));
+  return best;
+}
+const HEADING_ICONS = [["כסף", "💳"], ["צילום", "📷"], ["ספורט", "🏃"], ["חוף", "🏖️"], ["ים", "🏖️"], ["שינה", "😴"], ["טיסה", "✈️"], ["חורף", "❄️"], ["קיץ", "☀️"], ["כביסה", "🧺"], ["מתנות", "🎁"]];
+function headingToCat(h, knownCats, itemsUnder) {
+  const hb = bareName(h);
+  // 1. an existing category with the same name
+  const same = knownCats.find(k => { const kb = bareName(k); return kb && hb && (hb.includes(kb) || kb.includes(hb)); });
+  if (same) return same;
+  // 2. the heading itself is a known kind (e.g. "הנעלה" → ביגוד)
+  const byHeading = classifyGear(h);
+  if (byHeading) return byHeading;
+  // 3. most of the items under it belong to one known category
+  const votes = {};
+  itemsUnder.forEach(t => { const c = classifyGear(t); if (c) votes[c] = (votes[c] || 0) + 1; });
+  const top = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+  if (top && top[1] >= Math.max(1, itemsUnder.length / 2)) return top[0];
+  // 4. new category with a fitting icon
+  if (!/^\p{L}/u.test(h)) return h;
+  const icon = (HEADING_ICONS.find(([k]) => normHe(h).includes(k)) || [, "📦"])[1];
+  return `${icon} ${h}`;
+}
+
 // Turn a pasted list (from notes / another chat) into gear items.
 // Headings: "# x", "x:", "**x**", or – when the list uses bullets – any short line without a bullet.
 const BULLET_RE = /^([-*•–▪◦]|\d+[.)]|\[[ xX]\]|☐|☑|✅|✔)\s*/;
 function parseGearList(text, knownCats) {
-  const out = [];
-  let cat = null;
-  const bare = x => x.replace(/[^\p{L}\p{N} ]/gu, "").trim();
-  const findCat = h => {
-    const hb = bare(h);
-    return knownCats.find(k => { const kb = bare(k); return kb && hb && (hb.includes(kb) || kb.includes(hb)); }) || (/^\p{L}/u.test(h) ? `📦 ${h}` : h);
-  };
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const usesBullets = lines.filter(l => BULLET_RE.test(l)).length >= Math.max(2, lines.length * 0.3);
+  // First pass: split into sections
+  const sections = [{ heading: null, items: [] }];
   for (let line of lines) {
     const isBullet = BULLET_RE.test(line);
     const explicitHeading = !isBullet && (/^#+\s*/.test(line) || /:$/.test(line) || /^\*\*.+\*\*:?$/.test(line));
     if (explicitHeading || (usesBullets && !isBullet)) {
       const h = line.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/:$/, "").trim();
       // long sentences between bullets are explanations, not categories
-      if (h && h.length <= 40) cat = findCat(h);
+      if (h && h.length <= 40) sections.push({ heading: h, items: [] });
       continue;
     }
     line = line.replace(BULLET_RE, "").replace(/^\[[ xX]\]\s*/, "");
@@ -1562,8 +1644,14 @@ function parseGearList(text, knownCats) {
     const url = line.match(/https?:\/\/\S+/);
     if (url) { link = link || url[0]; line = line.replace(url[0], ""); }
     line = line.replace(/\*\*/g, "").replace(/[\s\-–:|]+$/, "").trim();
-    if (line) out.push({ text: line, cat: cat || "🧩 אחר", link });
+    if (line) sections[sections.length - 1].items.push({ text: line, link });
   }
+  // Second pass: decide each section's category
+  const out = [];
+  sections.forEach(sec => {
+    const secCat = sec.heading ? headingToCat(sec.heading, knownCats, sec.items.map(i => i.text)) : null;
+    sec.items.forEach(it => out.push({ ...it, cat: secCat || classifyGear(it.text) || "🧩 אחר" }));
+  });
   return out;
 }
 const normText = t => String(t).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
@@ -1637,7 +1725,7 @@ function gearItems(customGear, gearMeta, gearHidden, pid) {
 }
 const gearCatList = items => [...new Set([...Object.keys(GEAR_ITEMS), ...items.map(i => i.cat)])];
 
-function GearManage({ items, persons, activeUser, onDeleteCat, onDeleteCustom, onRestore, onClearChecks, onClose, hiddenCount }) {
+function GearManage({ items, persons, activeUser, onAutoSort, onDeleteCat, onDeleteCustom, onRestore, onClearChecks, onClose, hiddenCount }) {
   const cats = gearCatList(items).filter(c => items.some(i => i.cat === c));
   const customCount = items.filter(i => i.id.startsWith("custom_")).length;
   const row = { display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: `1px solid ${T.surfaceBorder}` };
@@ -1652,6 +1740,7 @@ function GearManage({ items, persons, activeUser, onDeleteCat, onDeleteCustom, o
           <button onClick={() => { if (confirm(`למחוק את הקטגוריה "${c}" וכל הפריטים שבה?`)) onDeleteCat(c); }} style={danger}>מחק</button>
         </div>
       ))}
+      <button onClick={onAutoSort} style={big()}>🪄 לסדר אוטומטית: להעביר פריטים לקטגוריה המתאימה</button>
       <div style={{ fontSize: 12, color: T.muted, fontWeight: 600, margin: "16px 0 0" }}>איפוס</div>
       <button onClick={() => { if (confirm(`לנקות את כל הסימונים של ${persons[activeUser === "person1" ? 0 : 1]}?`)) onClearChecks(); }} style={big()}>⬜ לנקות את הסימונים של {persons[activeUser === "person1" ? 0 : 1]}</button>
       {hiddenCount > 0 && <button onClick={onRestore} style={big()}>↩️ להחזיר {hiddenCount} פריטים מקוריים שנמחקו</button>}
@@ -1718,6 +1807,22 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
   const deleteItem = item => {
     if (item.id.startsWith("custom_")) setCustomGear(p => p.filter(g => g.id !== item.id));
     else setGearHidden(h => ({ ...h, [item.id]: true }));
+  };
+  // Move added items into the category their name points to (only out of non-built-in categories)
+  const autoSort = () => {
+    let moved = 0;
+    const metaPatch = {};
+    const next = customGear.map(g => {
+      const cur = gearMeta[g.id]?.cat || g.cat;
+      const target = classifyGear(g.text);
+      if (!target || target === cur || GEAR_ITEMS[cur]) return g;
+      moved++;
+      if (gearMeta[g.id]?.cat) metaPatch[g.id] = { ...gearMeta[g.id], cat: undefined };
+      return { ...g, cat: target };
+    });
+    setCustomGear(next);
+    if (Object.keys(metaPatch).length) setGearMeta(p => ({ ...p, ...metaPatch }));
+    alert(moved ? `הועברו ${moved} פריטים לקטגוריה המתאימה` : "הכל כבר מסודר 👌");
   };
   const deleteCat = cat => {
     const inCat = everything.filter(i => i.cat === cat);
@@ -1815,6 +1920,7 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
 
       {showImport && <GearImport onClose={() => setShowImport(false)} onImport={importList} persons={persons} defaultOwner={activeUser} />}
       {showManage && <GearManage items={everything} persons={persons} activeUser={activeUser} hiddenCount={Object.keys(gearHidden).filter(k => gearHidden[k]).length}
+        onAutoSort={autoSort}
         onDeleteCat={deleteCat}
         onDeleteCustom={() => setCustomGear([])}
         onRestore={() => setGearHidden({})}
