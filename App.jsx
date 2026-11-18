@@ -237,11 +237,11 @@ const COUNTRY_CODES = { בולגריה: "bg", יוון: "gr", אלבניה: "al"
 
 // Each style has backup servers: if the first one fails to load, we switch automatically.
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
-// Only servers that need no API key. (CARTO was removed: it started returning "API key required" images.)
+// Only servers that need no API key. Esri first: its labels are in English (OSM shows each country in its own language). (CARTO was removed: it started returning "API key required" images.)
 const TILE_STYLES = {
   light: { label: "🗺️", name: "רגילה", sources: [
-    { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr: "© OpenStreetMap" },
     { url: `${ESRI}/World_Street_Map/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri" },
+    { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr: "© OpenStreetMap" },
   ] },
   dark: { label: "🌙", name: "כהה", sources: [
     { url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, attr: "© Esri", maxNative: 16, labels: `${ESRI}/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}` },
@@ -290,6 +290,22 @@ function buildStops(countries, cities) {
     });
   });
   return stops;
+}
+
+// Export everything to a KML file that Google My Maps can import.
+function buildKML(pins, stops) {
+  const esc = t => String(t ?? "").replace(/[<>&'"]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
+  const kmlColor = hex => { const h = hex.replace("#", ""); return `ff${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}`; };
+  const styles = PIN_CATS.map(c => `<Style id="cat-${c.id}"><IconStyle><color>${kmlColor(c.color)}</color><scale>1.1</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/wht-blank.png</href></Icon></IconStyle></Style>`).join("")
+    + `<Style id="stop"><IconStyle><color>ffff8c5b</color><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/paddle/wht-circle.png</href></Icon></IconStyle></Style><Style id="route"><LineStyle><color>ffff8c5b</color><width>4</width></LineStyle></Style>`;
+  const pm = (name, desc, lat, lng, style) => `<Placemark><name>${esc(name)}</name><description>${esc(desc)}</description><styleUrl>#${style}</styleUrl><Point><coordinates>${lng},${lat},0</coordinates></Point></Placemark>`;
+  const folders = PIN_CATS.map(c => {
+    const list = pins.filter(p => p.cat === c.id && p.lat != null);
+    if (!list.length) return "";
+    return `<Folder><name>${esc(`${c.icon} ${c.label}`)}</name>${list.map(p => pm(p.name, [p.country, p.date, p.note, p.link].filter(Boolean).join(" · "), p.lat, p.lng, `cat-${c.id}`)).join("")}</Folder>`;
+  }).join("");
+  const route = `<Folder><name>🧭 המסלול</name>${stops.map((st, i) => pm(`${i + 1}. ${st.name}`, `${st.country.name} · ${fmt(st.start)}–${fmt(st.end)}${st.accommodation ? ` · ${st.accommodation}` : ""}`, st.lat, st.lng, "stop")).join("")}${stops.length > 1 ? `<Placemark><name>קו המסלול</name><styleUrl>#route</styleUrl><LineString><tessellate>1</tessellate><coordinates>${stops.map(st => `${st.lng},${st.lat},0`).join(" ")}</coordinates></LineString></Placemark>` : ""}</Folder>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>הטיול הגדול</name>${styles}${route}${folders}</Document></kml>`;
 }
 
 function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, tracks, onTracksChange, compares, expenses, focus }) {
@@ -634,6 +650,8 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
             </div>
           ))}
 
+          <button onClick={() => saveFilesToDevice([new File([buildKML(pins, stops)], "trip-map.kml", { type: "application/vnd.google-earth.kml+xml" })])} style={primaryBtn({ marginTop: 14 })}>⬇️ ייצוא ל-Google My Maps</button>
+          <div style={{ fontSize: 12, color: T.muted, marginTop: 6 }}>יוצר קובץ עם כל המסלול והנקודות. ב-mymaps.google.com: יוצרים מפה, לוחצים "ייבוא" ובוחרים את הקובץ. אחרי זה המפה זמינה באפליקציית גוגל מפות (שמורים ← מפות).</div>
           <div style={{ fontSize: 12, color: T.muted, margin: "14px 0 6px", fontWeight: 600 }}>הנקודות שלי ({pins.length})</div>
           {pins.length === 0 && <div style={{ fontSize: 13, color: T.muted }}>עוד אין. לוחצים + או מחפשים מקום למעלה.</div>}
           {pins.map(pin => {
@@ -1857,6 +1875,15 @@ function GearScreen({ checkedBy, setCheckedBy, customGear, setCustomGear, gearMe
         </div>
       </div>
 
+      {mine.length === 0 && (
+        <div className="fade-up" style={{ ...card({ textAlign: "center", padding: "26px 16px", marginBottom: 12 }) }}>
+          <div style={{ fontSize: 40 }}>🎒</div>
+          <div style={{ fontWeight: 800, fontSize: 16, margin: "6px 0 4px" }}>הרשימה ריקה</div>
+          <div style={{ fontSize: 13, color: T.muted, marginBottom: 14 }}>מדביקים את רשימת הציוד ב"ייבוא", או מוסיפים פריטים למטה</div>
+          <button onClick={() => setShowImport(true)} style={primaryBtn()}>📋 ייבוא רשימה</button>
+        </div>
+      )}
+
       {/* Gear categories */}
       {cats.map(cat => {
         const allCatItems = mine.filter(i => i.cat === cat);
@@ -2025,6 +2052,14 @@ function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expens
 
 export default function TripPlanner() {
   const saved = load();
+  // One-time reset of the gear list (Haviv asked to empty it; he'll import a new list).
+  // Runs once per device, marked by gearReset1. Original items can be restored from ⚙️ ניהול.
+  if (!saved.gearReset1) {
+    saved.customGear = [];
+    saved.gearMeta = {};
+    saved.gearCheckedBy = { person1: {}, person2: {} };
+    saved.gearHidden = Object.fromEntries(Object.values(GEAR_ITEMS).flat().map(i => [i.id, true]));
+  }
 
   const [countries, setCountries] = useState(() =>
     COUNTRIES.map(c => ({ ...c, weeks: saved?.countryWeeks?.[c.name] ?? c.weeks }))
@@ -2051,7 +2086,7 @@ export default function TripPlanner() {
   const doSave = useCallback(() => {
     persist({
       countryWeeks: Object.fromEntries(countries.map(c => [c.name, c.weeks])),
-      pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares,
+      pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares, gearReset1: true,
     });
     setSavedPulse(true);
     setTimeout(() => setSavedPulse(false), 1200);
