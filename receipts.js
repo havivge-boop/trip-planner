@@ -28,9 +28,40 @@ function tx(mode, fn) {
   }));
 }
 
-export const putReceipt = (id, blob) => tx("readwrite", s => s.put(blob, id));
-export const getReceipt = id => tx("readonly", s => s.get(id));
-export const deleteReceipt = id => tx("readwrite", s => s.delete(id));
+const putLocal = (id, blob) => tx("readwrite", s => s.put(blob, id));
+const getLocal = id => tx("readonly", s => s.get(id));
+const deleteLocal = id => tx("readwrite", s => s.delete(id));
+
+// When sync is on, photos are also kept in the cloud (see sync.js → receiptRemote).
+let remote = null;
+export function setReceiptRemote(r) { remote = r; }
+
+export async function putReceipt(id, blob) {
+  await putLocal(id, blob);
+  if (remote) remote.put(id, blob).catch(e => console.warn("receipt upload failed", e));
+}
+export async function getReceipt(id) {
+  const b = await getLocal(id).catch(() => null);
+  if (b || !remote) return b;
+  const r = await remote.get(id).catch(() => null);
+  if (r) putLocal(id, r).catch(() => {});
+  return r;
+}
+export async function deleteReceipt(id) {
+  await deleteLocal(id).catch(() => {});
+  if (remote) remote.del(id).catch(() => {});
+}
+// Upload photos that exist only on this device (first time sync is turned on).
+export async function uploadMissingReceipts(ids) {
+  if (!remote) return;
+  for (const id of ids) {
+    try {
+      if (await remote.has(id)) continue;
+      const b = await getLocal(id);
+      if (b) await remote.put(id, b);
+    } catch (e) { console.warn("receipt backfill failed", id, e); }
+  }
+}
 
 // Shrink a photo to max 1600px on the long side, JPEG ~70%.
 export function compressImage(file, maxSide = 1600, quality = 0.7) {

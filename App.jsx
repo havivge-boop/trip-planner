@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { putReceipt, getReceipt, deleteReceipt, compressImage, saveFilesToDevice, receiptFileName } from "./receipts.js";
+import { putReceipt, getReceipt, deleteReceipt, compressImage, saveFilesToDevice, receiptFileName, setReceiptRemote, uploadMissingReceipts } from "./receipts.js";
+import { syncConfigured, onAuth, signIn, signOutUser, startSync, receiptRemote } from "./sync.js";
 
 // Fix default marker icons for Vite
 delete L.Icon.Default.prototype._getIconUrl;
@@ -2048,6 +2049,55 @@ function PersonalScreen({ persons, setPersons, activeUser, setActiveUser, expens
   );
 }
 
+// ─── SYNC ─────────────────────────────────────────────────────────────────────
+
+const SYNC_LABEL = {
+  off: { icon: "☁️", text: "לא מסונכרן", color: T.muted },
+  connecting: { icon: "⏳", text: "מתחבר…", color: T.muted },
+  syncing: { icon: "🔄", text: "מסנכרן…", color: "#93c5fd" },
+  ok: { icon: "✅", text: "מסונכרן", color: T.green },
+  error: { icon: "⚠️", text: "בעיה בסנכרון, ננסה שוב", color: "#fbbf24" },
+  denied: { icon: "⛔", text: "החשבון הזה לא מורשה", color: T.red },
+};
+
+function SyncSheet({ user, status, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const login = async () => {
+    setBusy(true); setErr("");
+    try { await signIn(); onClose(); }
+    catch (e) { if (!String(e?.code).includes("popup-closed")) setErr("ההתחברות לא הצליחה. נסו שוב."); }
+    setBusy(false);
+  };
+  const st = SYNC_LABEL[status] || SYNC_LABEL.off;
+  return (
+    <Sheet onClose={onClose} title="🔄 סנכרון בין שנינו">
+      {!syncConfigured ? (
+        <div style={{ fontSize: 14, color: T.muted }}>הסנכרון עוד לא הוגדר. בינתיים כל מה שמכניסים נשמר רק בטלפון הזה.</div>
+      ) : !user ? (
+        <>
+          <div style={{ fontSize: 14, color: T.muted, marginBottom: 14 }}>מתחברים עם חשבון גוגל, וכל מה שמכניסים (הוצאות, קבלות, מקומות, ציוד…) מופיע אצל שניכם תוך שנייה. מה שכבר שמור בטלפון הזה יעלה ויתמזג, שום דבר לא נמחק.</div>
+          <button onClick={login} disabled={busy} style={primaryBtn({ opacity: busy ? 0.6 : 1 })}>{busy ? "מתחבר…" : "התחבר עם Google"}</button>
+          {err && <div style={{ color: T.red, fontSize: 13, marginTop: 8 }}>{err}</div>}
+        </>
+      ) : (
+        <>
+          <div style={{ ...card({ display: "flex", alignItems: "center", gap: 12 }) }}>
+            {user.photoURL ? <img src={user.photoURL} alt="" referrerPolicy="no-referrer" style={{ width: 40, height: 40, borderRadius: "50%" }} /> : <div style={{ fontSize: 28 }}>👤</div>}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700 }}>{user.displayName || "מחובר"}</div>
+              <div style={{ fontSize: 12, color: T.muted, overflow: "hidden", textOverflow: "ellipsis" }}>{user.email}</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: st.color, margin: "8px 0 14px" }}>{st.icon} {st.text}</div>
+          {status === "denied" && <div style={{ fontSize: 13, color: T.muted, marginBottom: 12 }}>רק שני החשבונות שהוגדרו יכולים לראות את הטיול. אם התחברת עם חשבון אחר, התנתק והתחבר עם הנכון.</div>}
+          <button onClick={async () => { await signOutUser(); onClose(); }} style={{ width: "100%", background: "none", border: `1px solid ${T.surfaceBorder}`, borderRadius: 14, color: T.muted, padding: 11, cursor: "pointer", fontFamily: "'Heebo',sans-serif" }}>התנתק (המידע נשאר בטלפון)</button>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 export default function TripPlanner() {
@@ -2094,6 +2144,55 @@ export default function TripPlanner() {
 
   useEffect(() => { const t = setTimeout(doSave, 800); return () => clearTimeout(t); }, [doSave]);
 
+  // ── Sync (Firebase) ──
+  const [user, setUser] = useState(null);
+  const [syncStatus, setSyncStatus] = useState("off");
+  const [showSync, setShowSync] = useState(false);
+  const syncRef = useRef(null);
+  const SECTIONS = {
+    countryWeeks: [Object.fromEntries(countries.map(c => [c.name, c.weeks])), v => setCountries(prev => prev.map(c => ({ ...c, weeks: v?.[c.name] ?? c.weeks })))],
+    pins: [pins, setPins], tracks: [tracks, setTracks], cities: [cities, setCities], notes: [notes, setNotes],
+    expenses: [expenses, setExpenses], customGear: [customGear, setCustomGear], gearMeta: [gearMeta, setGearMeta],
+    gearHidden: [gearHidden, setGearHidden], gearCheckedBy: [gearCheckedBy, setGearCheckedBy],
+    personalNotes: [personalNotes, setPersonalNotes], persons: [persons, setPersons], compares: [compares, setCompares],
+  };
+  const sectionsRef = useRef(SECTIONS);
+  sectionsRef.current = SECTIONS;
+
+  useEffect(() => {
+    let unsub = () => {};
+    onAuth(u => { setUser(u); if (!u) setSyncStatus("off"); }).then(f => { unsub = f; });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    let alive = true;
+    setSyncStatus("connecting");
+    (async () => {
+      const handle = await startSync({
+        names: Object.keys(sectionsRef.current),
+        getLocal: n => sectionsRef.current[n][0],
+        applyRemote: (n, v) => sectionsRef.current[n][1](v),
+        onStatus: st => alive && setSyncStatus(st),
+        user,
+      });
+      if (!alive) { handle.stop(); return; }
+      syncRef.current = handle;
+      setReceiptRemote(await receiptRemote());
+      uploadMissingReceipts(sectionsRef.current.expenses[0].filter(e => e.receiptId).map(e => e.receiptId));
+    })().catch(e => { console.warn(e); alive && setSyncStatus("error"); });
+    return () => { alive = false; syncRef.current?.stop(); syncRef.current = null; setReceiptRemote(null); };
+  }, [user]);
+
+  // Push local changes (same rhythm as the local autosave)
+  useEffect(() => {
+    const h = syncRef.current;
+    if (!h) return;
+    const t = setTimeout(() => Object.keys(sectionsRef.current).forEach(n => { if (!h.isSynced(n)) h.push(n); }), 900);
+    return () => clearTimeout(t);
+  }, [doSave, syncStatus]);
+
   const totalBudget = countries.reduce((s, c) => s + DAILY_BUDGET[c.name] * c.weeks * 7, 0);
   const totalSpent = expenses.reduce((s, e) => s + e.amount, 0);
   const totalWeeks = countries.reduce((s, c) => s + c.weeks, 0);
@@ -2131,7 +2230,13 @@ export default function TripPlanner() {
             <div style={{ fontSize: 15, fontWeight: 800, color: totalSpent > totalBudget ? T.red : T.green }}>€{Math.round(totalSpent).toLocaleString()}</div>
             <div style={{ fontSize: 10, color: T.muted }}>מתוך €{Math.round(totalBudget).toLocaleString()}</div>
           </div>
-          <div title="נשמר אוטומטית" style={{ width: 10, height: 10, borderRadius: "50%", background: savedPulse ? T.green : "rgba(255,255,255,0.2)", boxShadow: savedPulse ? `0 0 10px ${T.green}` : "none", transition: "all .3s" }} />
+          {syncConfigured ? (
+            <button onClick={() => setShowSync(true)} title={(SYNC_LABEL[syncStatus] || SYNC_LABEL.off).text} style={{ ...glass({ borderRadius: 12 }), width: 36, height: 36, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+              {user ? (SYNC_LABEL[syncStatus] || SYNC_LABEL.off).icon : "☁️"}
+            </button>
+          ) : (
+            <div title="נשמר אוטומטית" style={{ width: 10, height: 10, borderRadius: "50%", background: savedPulse ? T.green : "rgba(255,255,255,0.2)", boxShadow: savedPulse ? `0 0 10px ${T.green}` : "none", transition: "all .3s" }} />
+          )}
         </div>
       </div>
 
@@ -2150,6 +2255,8 @@ export default function TripPlanner() {
           </div>
         )}
       </div>
+
+      {showSync && <SyncSheet user={user} status={syncStatus} onClose={() => setShowSync(false)} />}
 
       {/* BOTTOM NAV */}
       <div style={{ padding: "6px 10px calc(8px + env(safe-area-inset-bottom))", flexShrink: 0, zIndex: 1000 }}>
