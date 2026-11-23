@@ -313,7 +313,8 @@ function buildKML(pins, stops) {
 }
 
 function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, tracks, onTracksChange, compares, expenses, focus, googleMid, setGoogleMid }) {
-  const [view, setView] = useState(() => { try { return localStorage.getItem("trip-map-view") === "google" && googleMid ? "google" : "ours"; } catch { return "ours"; } });
+  // Google My Maps is the default (Haviv prefers it); our map stays as a second view.
+  const [view, setView] = useState(() => { let v = null; try { v = localStorage.getItem("trip-map-view"); } catch {} return googleMid && v !== "ours" ? "google" : "ours"; });
   const [googleLoaded, setGoogleLoaded] = useState(view === "google");
   const [midInput, setMidInput] = useState("");
   const switchView = v => { setView(v); if (v === "google") setGoogleLoaded(true); try { localStorage.setItem("trip-map-view", v); } catch {} };
