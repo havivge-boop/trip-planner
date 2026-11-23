@@ -2233,6 +2233,31 @@ export default function TripPlanner() {
     { id: "personal", label: "אישי",    icon: "👤" },
   ];
   const tabIdx = TABS.findIndex(t => t.id === tab);
+  // Swipe between tabs (not on the map – there a swipe moves the map).
+  // RTL: the next tab sits to the left, so dragging the finger to the right goes forward.
+  const touch = useRef(null);
+  const onTouchStart = e => {
+    const t = e.touches[0];
+    if (e.touches.length !== 1 || t.clientX < 24 || t.clientX > window.innerWidth - 24) { touch.current = null; return; } // screen edges = Safari's back gesture
+    let el = e.target;
+    while (el && el !== e.currentTarget) {
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) { touch.current = null; return; }
+      const ox = getComputedStyle(el).overflowX;
+      if ((ox === "auto" || ox === "scroll") && el.scrollWidth > el.clientWidth + 2) { touch.current = null; return; } // a row that scrolls sideways
+      el = el.parentElement;
+    }
+    touch.current = { x: t.clientX, y: t.clientY, time: Date.now() };
+  };
+  const onTouchEnd = e => {
+    const st = touch.current;
+    touch.current = null;
+    if (!st) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - st.x, dy = t.clientY - st.y;
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.8 || Date.now() - st.time > 700) return;
+    const next = tabIdx + (dx > 0 ? 1 : -1);
+    if (next >= 0 && next < TABS.length) goTab(TABS[next].id);
+  };
   const [mapFocus, setMapFocus] = useState(null);
   const showOnMap = pin => { setMapFocus({ id: pin.id, t: Date.now() }); goTab("map"); };
   const goTab = id => {
@@ -2273,7 +2298,7 @@ export default function TripPlanner() {
           <MapScreen visible={tab === "map"} countries={countries} cities={cities} setCities={setCities} pins={pins} onPinsChange={setPins} tracks={tracks} onTracksChange={setTracks} compares={compares} expenses={expenses} focus={mapFocus} googleMid={googleMapMid} setGoogleMid={setGoogleMapMid} />
         </div>
         {tab !== "map" && (
-          <div key={tab} className={dir === "left" ? "enter-left" : "enter-right"} style={{ height: "100%", position: "relative", zIndex: 1 }}>
+          <div key={tab} className={dir === "left" ? "enter-left" : "enter-right"} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd} style={{ height: "100%", position: "relative", zIndex: 1 }}>
             {tab === "plan"     && <PlanScreen countries={countries} setCountries={setCountries} cities={cities} setCities={setCities} notes={notes} setNotes={setNotes} pins={pins} setPins={setPins} expenses={expenses} onShowMap={showOnMap} />}
             {tab === "budget"   && <BudgetScreen countries={countries} expenses={expenses} setExpenses={setExpenses} persons={persons} pins={pins} />}
             {tab === "compare"  && <CompareScreen countries={countries} compares={compares} setCompares={setCompares} persons={persons} pins={pins} setPins={setPins} />}
