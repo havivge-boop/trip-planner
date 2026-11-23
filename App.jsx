@@ -252,6 +252,9 @@ const TILE_STYLES = {
   ] },
 };
 const STYLE_ORDER = ["light", "dark", "sat"];
+// Haviv's Google My Maps (built with Claude in Chrome, Nov 2026). Shared "anyone with the link".
+const DEFAULT_GOOGLE_MAP_MID = "1lzrKhSA9SSzcIh04qvHPtaBwEgMS7DM";
+const parseMid = s => { const m = String(s || "").match(/[?&]mid=([\w-]+)/); return m ? m[1] : /^[\w-]{20,}$/.test(String(s).trim()) ? String(s).trim() : null; };
 const navLinks = (lat, lng) => ({
   google: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`,
   waze: `https://waze.com/ul?ll=${lat},${lng}&navigate=yes`,
@@ -309,7 +312,12 @@ function buildKML(pins, stops) {
   return `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>הטיול הגדול</name>${styles}${route}${folders}</Document></kml>`;
 }
 
-function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, tracks, onTracksChange, compares, expenses, focus }) {
+function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, tracks, onTracksChange, compares, expenses, focus, googleMid, setGoogleMid }) {
+  const [view, setView] = useState(() => { try { return localStorage.getItem("trip-map-view") === "google" && googleMid ? "google" : "ours"; } catch { return "ours"; } });
+  const [googleLoaded, setGoogleLoaded] = useState(view === "google");
+  const [midInput, setMidInput] = useState("");
+  const switchView = v => { setView(v); if (v === "google") setGoogleLoaded(true); try { localStorage.setItem("trip-map-view", v); } catch {} };
+  useEffect(() => { if (view === "ours" && visible) setTimeout(() => mapInst.current?.invalidateSize(), 50); }, [view]);
   const pinMarkers = useRef({});
   const mapRef = useRef(null);
   const mapInst = useRef(null);
@@ -545,6 +553,17 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
     <div style={{ position: "relative", height: "100%", overflow: "hidden" }}>
       <div ref={mapRef} style={{ position: "absolute", inset: 0, zIndex: 0, background: "#0e1322" }} />
 
+      {/* Google My Maps view */}
+      {googleLoaded && googleMid && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 900, background: "#0e1322", display: view === "google" ? "block" : "none" }}>
+          <iframe title="Google My Maps" src={`https://www.google.com/maps/d/embed?mid=${googleMid}&ehbc=2E312F`} style={{ width: "100%", height: "100%", border: 0, display: "block" }} allowFullScreen loading="lazy" referrerPolicy="no-referrer-when-downgrade" />
+          <div style={{ position: "absolute", left: 12, bottom: 14, display: "flex", gap: 8 }}>
+            <button onClick={() => switchView("ours")} style={fab({ width: "auto", padding: "0 14px", fontSize: 14, fontWeight: 700, background: T.grad, border: "none" })}>🗺️ המפה שלנו</button>
+            <a href={`https://www.google.com/maps/d/viewer?mid=${googleMid}`} target="_blank" rel="noreferrer" style={{ ...fab({ width: "auto", padding: "0 12px", fontSize: 13 }), textDecoration: "none" }}>↗ פתח בגוגל</a>
+          </div>
+        </div>
+      )}
+
       {/* Search */}
       <div style={{ position: "absolute", top: 10, right: 10, left: 10, zIndex: 500, display: "flex", gap: 8 }}>
         <div style={{ ...glass({ borderRadius: 16 }), flex: 1, display: "flex", alignItems: "center", padding: "0 12px", boxShadow: "0 6px 18px rgba(0,0,0,.35)" }}>
@@ -554,6 +573,7 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
             style={{ flex: 1, background: "none", border: "none", color: T.text, fontFamily: "'Heebo',sans-serif", padding: "11px 8px", minWidth: 0, boxShadow: "none" }} />
           {query && <button onClick={() => { setQuery(""); setResults(null); }} style={{ background: "none", border: "none", color: T.muted, fontSize: 16, cursor: "pointer" }}>✕</button>}
         </div>
+        {googleMid && <button onClick={() => switchView("google")} style={fab({ fontSize: 13, fontWeight: 800, width: 52 })}>גוגל</button>}
         <button onClick={cycleStyle} style={fab()}>{TILE_STYLES[style].label}</button>
         <button onClick={() => setShowLayers(true)} style={fab()}>☰</button>
       </div>
@@ -651,6 +671,11 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
             </div>
           ))}
 
+          <div style={{ fontSize: 12, color: T.muted, margin: "14px 0 6px", fontWeight: 600 }}>מפת גוגל (My Maps)</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={midInput} onChange={e => setMidInput(e.target.value)} placeholder={googleMid ? "קישור חדש כדי להחליף" : "הדביקו קישור שיתוף של My Maps"} style={inputStyle({ flex: 1, fontSize: 14 })} />
+            <button onClick={() => { const m = parseMid(midInput); if (!m) { alert("לא זיהיתי קישור של My Maps (צריך להיות בו mid=)"); return; } setGoogleMid(m); setMidInput(""); setShowLayers(false); switchView("google"); }} style={chip(false, T.primary, { borderRadius: 12 })}>שמור</button>
+          </div>
           <button onClick={() => saveFilesToDevice([new File([buildKML(pins, stops)], "trip-map.kml", { type: "application/vnd.google-earth.kml+xml" })])} style={primaryBtn({ marginTop: 14 })}>⬇️ ייצוא ל-Google My Maps</button>
           <div style={{ fontSize: 12, color: T.muted, marginTop: 6 }}>יוצר קובץ עם כל המסלול והנקודות. ב-mymaps.google.com: יוצרים מפה, לוחצים "ייבוא" ובוחרים את הקובץ. אחרי זה המפה זמינה באפליקציית גוגל מפות (שמורים ← מפות).</div>
           <div style={{ fontSize: 12, color: T.muted, margin: "14px 0 6px", fontWeight: 600 }}>הנקודות שלי ({pins.length})</div>
@@ -2131,16 +2156,17 @@ export default function TripPlanner() {
   const [activeUser, setActiveUser] = useState(saved?.activeUser || "person1");
   const [personalNotes, setPersonalNotes] = useState(saved?.personalNotes || {});
   const [compares, setCompares] = useState(saved?.compares || []);
+  const [googleMapMid, setGoogleMapMid] = useState(saved?.googleMapMid || DEFAULT_GOOGLE_MAP_MID);
   const [savedPulse, setSavedPulse] = useState(false);
 
   const doSave = useCallback(() => {
     persist({
       countryWeeks: Object.fromEntries(countries.map(c => [c.name, c.weeks])),
-      pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares, gearReset1: true,
+      pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares, googleMapMid, gearReset1: true,
     });
     setSavedPulse(true);
     setTimeout(() => setSavedPulse(false), 1200);
-  }, [countries, pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares]);
+  }, [countries, pins, tracks, cities, notes, expenses, gearChecked, gearCheckedBy, gearMeta, gearHidden, customGear, persons, activeUser, personalNotes, compares, googleMapMid]);
 
   useEffect(() => { const t = setTimeout(doSave, 800); return () => clearTimeout(t); }, [doSave]);
 
@@ -2154,7 +2180,7 @@ export default function TripPlanner() {
     pins: [pins, setPins], tracks: [tracks, setTracks], cities: [cities, setCities], notes: [notes, setNotes],
     expenses: [expenses, setExpenses], customGear: [customGear, setCustomGear], gearMeta: [gearMeta, setGearMeta],
     gearHidden: [gearHidden, setGearHidden], gearCheckedBy: [gearCheckedBy, setGearCheckedBy],
-    personalNotes: [personalNotes, setPersonalNotes], persons: [persons, setPersons], compares: [compares, setCompares],
+    personalNotes: [personalNotes, setPersonalNotes], persons: [persons, setPersons], compares: [compares, setCompares], googleMapMid: [googleMapMid, setGoogleMapMid],
   };
   const sectionsRef = useRef(SECTIONS);
   sectionsRef.current = SECTIONS;
@@ -2243,7 +2269,7 @@ export default function TripPlanner() {
       {/* CONTENT */}
       <div style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }}>
         <div className="map-in" style={{ position: "absolute", inset: 0, display: tab === "map" ? "block" : "none" }}>
-          <MapScreen visible={tab === "map"} countries={countries} cities={cities} setCities={setCities} pins={pins} onPinsChange={setPins} tracks={tracks} onTracksChange={setTracks} compares={compares} expenses={expenses} focus={mapFocus} />
+          <MapScreen visible={tab === "map"} countries={countries} cities={cities} setCities={setCities} pins={pins} onPinsChange={setPins} tracks={tracks} onTracksChange={setTracks} compares={compares} expenses={expenses} focus={mapFocus} googleMid={googleMapMid} setGoogleMid={setGoogleMapMid} />
         </div>
         {tab !== "map" && (
           <div key={tab} className={dir === "left" ? "enter-left" : "enter-right"} style={{ height: "100%", position: "relative", zIndex: 1 }}>
