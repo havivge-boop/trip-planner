@@ -2233,6 +2233,7 @@ export default function TripPlanner() {
     { id: "personal", label: "אישי",    icon: "👤" },
   ];
   const tabIdx = TABS.findIndex(t => t.id === tab);
+  useEffect(() => { requestAnimationFrame(() => window.__appReady?.()); }, []); // finish the loading screen (index.html)
   // Swipe between tabs (not on the map – there a swipe moves the map).
   // RTL: the next tab sits to the left, so dragging the finger to the right goes forward.
   const touch = useRef(null);

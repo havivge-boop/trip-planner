@@ -10,10 +10,82 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;700;800;900&display=swap" rel="stylesheet" />
+    <style>
+      #splash { position: fixed; inset: 0; z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+        background: radial-gradient(60vmax 60vmax at 110% -10%, rgba(124,92,255,.28), transparent 60%), radial-gradient(50vmax 50vmax at -20% 30%, rgba(34,195,230,.16), transparent 60%), #070a12;
+        font-family: 'Heebo', system-ui, sans-serif; direction: rtl; transition: opacity .45s ease; }
+      #splash.hide { opacity: 0; pointer-events: none; }
+      #splash .title { font-size: 34px; font-weight: 900; margin-top: 18px; background: linear-gradient(135deg,#a48bff,#5b8cff 55%,#22c3e6); -webkit-background-clip: text; background-clip: text; color: transparent; animation: sp-up .7s .15s cubic-bezier(.2,.8,.2,1) both; }
+      #splash .year { font-size: 18px; font-weight: 700; letter-spacing: 6px; color: #c7d4ff; opacity: .85; animation: sp-up .7s .3s cubic-bezier(.2,.8,.2,1) both; }
+      #splash .bar { width: 200px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: 34px; direction: ltr; }
+      #splash .fill { height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg,#7c5cff,#5b8cff,#22c3e6); box-shadow: 0 0 12px rgba(91,140,255,.7); }
+      #splash .pct { font-size: 12px; color: #8b95ab; margin-top: 6px; font-variant-numeric: tabular-nums; }
+      #splash .globe-spin { animation: sp-pop .8s cubic-bezier(.2,.8,.2,1) both; }
+      @keyframes sp-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+      @keyframes sp-pop { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: none; } }
+    </style>
     <title>הטיול הגדול</title>
   </head>
   <body style="margin:0;background:#070a12">
+    <div id="splash">
+      <svg class="globe-spin" width="260" height="220" viewBox="-150 -125 300 250" aria-hidden="true">
+        <defs>
+          <radialGradient id="sg" cx=".36" cy=".3" r=".85"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#dfe8ff"/><stop offset="1" stop-color="#9fb6ff"/></radialGradient>
+          <clipPath id="sc"><circle r="92"/></clipPath>
+        </defs>
+        <!-- orbit + plane behind the globe -->
+        <g transform="rotate(-16)">
+          <ellipse rx="128" ry="42" fill="none" stroke="#7f9cff" stroke-opacity=".35" stroke-width="2.5" stroke-dasharray="1 9" stroke-linecap="round"/>
+          <g opacity="0"><g transform="scale(1.2)"><path fill="#fff" transform="rotate(90) translate(-12 -12)" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></g>
+            <animateMotion dur="3.2s" repeatCount="indefinite" rotate="auto" path="M128,0 A128,42 0 1,1 -128,0 A128,42 0 1,1 128,0"/>
+            <animate attributeName="opacity" dur="3.2s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;.5" values="0;.55"/>
+          </g>
+        </g>
+        <!-- globe -->
+        <circle r="92" fill="url(#sg)"/>
+        <g clip-path="url(#sc)" fill="none" stroke="#5b8cff" stroke-opacity=".5" stroke-width="3.5">
+          <ellipse rx="92" ry="30"/><line x1="-92" x2="92"/><ellipse rx="92" ry="66"/>
+          <ellipse ry="92" rx="20"><animate attributeName="rx" dur="4s" repeatCount="indefinite" values="0;92;0" keyTimes="0;.5;1"/></ellipse>
+          <ellipse ry="92" rx="70"><animate attributeName="rx" dur="4s" repeatCount="indefinite" values="70;0;70" keyTimes="0;.5;1"/></ellipse>
+          <line y1="-92" y2="92"/>
+        </g>
+        <!-- front half of the orbit + plane in front of the globe -->
+        <g transform="rotate(-16)">
+          <path d="M128,0 A128,42 0 0,1 -128,0" fill="none" stroke="#ffffff" stroke-opacity=".75" stroke-width="2.5" stroke-dasharray="1 9" stroke-linecap="round"/>
+          <g><g transform="scale(1.6)"><path fill="#fff" transform="rotate(90) translate(-12 -12)" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></g>
+            <animateMotion dur="3.2s" repeatCount="indefinite" rotate="auto" path="M128,0 A128,42 0 1,1 -128,0 A128,42 0 1,1 128,0"/>
+            <animate attributeName="opacity" dur="3.2s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;.5" values="1;0"/>
+          </g>
+        </g>
+      </svg>
+      <div class="title">הטיול הגדול</div>
+      <div class="year">2027</div>
+      <div class="bar"><div class="fill" id="splash-fill"></div></div>
+      <div class="pct" id="splash-pct">0%</div>
+    </div>
+    <script>
+      (function () {
+        var s = document.getElementById("splash"), fill = document.getElementById("splash-fill"), pct = document.getElementById("splash-pct");
+        var p = 0, done = false, start = Date.now(), MIN = 1800;
+        function draw() { fill.style.width = p.toFixed(1) + "%"; pct.textContent = Math.round(p) + "%"; }
+        var iv = setInterval(function () { if (!done) { p += (90 - p) * 0.045; draw(); } }, 50);
+        window.__appReady = function () {
+          if (done) return; done = true;
+          var from = p, t0 = Date.now(), dur = Math.max(450, MIN - (t0 - start));
+          var iv2 = setInterval(function () {
+            var k = Math.min(1, (Date.now() - t0) / dur);
+            p = from + (100 - from) * (1 - Math.pow(1 - k, 2)); draw();
+            if (k >= 1) { clearInterval(iv2); clearInterval(iv); s.classList.add("hide"); setTimeout(function () { s.remove(); }, 500); }
+          }, 30);
+        };
+        setTimeout(function () { window.__appReady(); }, 12000); // never get stuck
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="./main.jsx"></script>
   </body>
