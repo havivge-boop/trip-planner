@@ -699,6 +699,34 @@ function MapScreen({ visible, countries, cities, setCities, pins, onPinsChange, 
   );
 }
 
+// Horizontal swipe detector. onSwipe(+1) = forward (finger moves right, RTL), onSwipe(-1) = back.
+// Ignores screen edges (system back gesture), text fields and rows that scroll sideways.
+function useSwipe(onSwipe) {
+  const st = useRef(null);
+  return {
+    onTouchStart: e => {
+      const t = e.touches[0];
+      st.current = null;
+      if (e.touches.length !== 1 || t.clientX < 24 || t.clientX > window.innerWidth - 24) return;
+      for (let el = e.target; el && el !== e.currentTarget; el = el.parentElement) {
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+        const ox = getComputedStyle(el).overflowX;
+        if ((ox === "auto" || ox === "scroll") && el.scrollWidth > el.clientWidth + 2) return;
+      }
+      st.current = { x: t.clientX, y: t.clientY, time: Date.now() };
+    },
+    onTouchEnd: e => {
+      const s0 = st.current;
+      st.current = null;
+      if (!s0) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - s0.x, dy = t.clientY - s0.y;
+      if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.8 || Date.now() - s0.time > 700) return;
+      if (onSwipe(dx > 0 ? 1 : -1) !== false) e.stopPropagation();
+    },
+  };
+}
+
 // ─── PLACES (pins with a country / day) ──────────────────────────────────────
 
 const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -883,7 +911,26 @@ function CountryPlaces({ country, countries, pins, setPins, expenses, onShowMap 
 // ─── PLAN SCREEN ─────────────────────────────────────────────────────────────
 
 function PlanScreen({ countries, setCountries, cities, setCities, notes, setNotes, pins, setPins, expenses, onShowMap }) {
-  const [view, setView] = useState("overview"); // "overview" | countryName
+  const [view, setViewRaw] = useState("overview"); // "overview" | countryName
+  const [pdir, setPdir] = useState("left");
+  const stripRef = useRef(null);
+  const setView = v => {
+    if (v === view) return;
+    const idxOf = n => (n === "overview" ? -1 : countries.findIndex(c => c.name === n));
+    setPdir(idxOf(v) > idxOf(view) ? "left" : "right");
+    setViewRaw(v);
+  };
+  // Inside a country, a swipe moves to the next/previous country (instead of the next tab)
+  const countrySwipe = useSwipe(d => {
+    if (view === "overview") return false;
+    const i = countries.findIndex(c => c.name === view) + d;
+    if (i < 0 || i >= countries.length) return false;
+    setView(countries[i].name);
+  });
+  useEffect(() => {
+    const el = stripRef.current?.querySelector("[data-active=true]");
+    el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  }, [view]);
   const dates = getDates(countries);
   const totalWeeks = countries.reduce((s, c) => s + c.weeks, 0);
 
@@ -907,10 +954,20 @@ function PlanScreen({ countries, setCountries, cities, setCities, notes, setNote
   if (view !== "overview" && activeC) {
     const plannedDays = (cities[activeC.name] || []).reduce((s, c) => s + c.days, 0);
     return (
-      <div className="scr" style={{ padding: "16px 14px 24px", overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
-        <button onClick={() => setView("overview")} style={{ background: "none", border: "none", color: T.primary, cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 14, marginBottom: 14, display: "flex", alignItems: "center", gap: 6, padding: 0 }}>
-          ← חזרה
-        </button>
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" }} {...countrySwipe}>
+        {/* Country strip: back + all flags, tap to jump */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px 6px", flexShrink: 0 }}>
+          <button onClick={() => setView("overview")} style={{ ...glass({ borderRadius: 12 }), color: T.text, padding: "7px 12px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 13, flexShrink: 0 }}>→ כל המדינות</button>
+          <div ref={stripRef} className="scr" style={{ display: "flex", gap: 6, overflowX: "auto", flex: 1, padding: "2px 0" }}>
+            {countries.map(c => {
+              const on = c.name === view;
+              return (
+                <button key={c.name} data-active={on} onClick={() => setView(c.name)} style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 12, fontSize: 20, cursor: "pointer", background: on ? c.color + "33" : "rgba(255,255,255,0.05)", border: `1.5px solid ${on ? c.color : "transparent"}`, transform: on ? "scale(1.08)" : "none", transition: "all .3s cubic-bezier(.2,.8,.2,1)" }}>{c.emoji}</button>
+              );
+            })}
+          </div>
+        </div>
+      <div key={view} className={`scr ${pdir === "left" ? "enter-left" : "enter-right"}`} style={{ padding: "8px 14px 24px", overflowY: "auto", flex: 1, minHeight: 0, boxSizing: "border-box" }}>
 
         {/* Country header */}
         <div style={{ ...card(), background: `linear-gradient(135deg, ${activeC.color}18, ${activeC.color}06)`, border: `1px solid ${activeC.color}35`, marginBottom: 16 }}>
@@ -977,13 +1034,15 @@ function PlanScreen({ countries, setCountries, cities, setCities, notes, setNote
         {/* Country nav */}
         <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
           {activeIdx > 0 && (
-            <button onClick={() => setView(countries[activeIdx - 1].name)} style={{ background: T.surface, border: `1px solid ${T.surfaceBorder}`, borderRadius: 8, color: T.muted, padding: "8px 14px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 13 }}>← {countries[activeIdx - 1].emoji} {countries[activeIdx - 1].name}</button>
+            <button onClick={() => setView(countries[activeIdx - 1].name)} style={{ ...glass({ borderRadius: 12 }), color: T.text, padding: "9px 14px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 13 }}>→ {countries[activeIdx - 1].emoji} {countries[activeIdx - 1].name}</button>
           )}
           <div style={{ flex: 1 }} />
           {activeIdx < countries.length - 1 && (
-            <button onClick={() => setView(countries[activeIdx + 1].name)} style={{ background: T.surface, border: `1px solid ${T.surfaceBorder}`, borderRadius: 8, color: T.muted, padding: "8px 14px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 13 }}>{countries[activeIdx + 1].emoji} {countries[activeIdx + 1].name} →</button>
+            <button onClick={() => setView(countries[activeIdx + 1].name)} style={{ ...glass({ borderRadius: 12 }), color: T.text, padding: "9px 14px", cursor: "pointer", fontFamily: "'Heebo',sans-serif", fontSize: 13 }}>{countries[activeIdx + 1].emoji} {countries[activeIdx + 1].name} ←</button>
           )}
         </div>
+        <div style={{ fontSize: 11, color: T.muted, textAlign: "center", marginTop: 10 }}>אפשר גם להחליק ימינה/שמאלה כדי לעבור מדינה</div>
+      </div>
       </div>
     );
   }
@@ -991,7 +1050,7 @@ function PlanScreen({ countries, setCountries, cities, setCities, notes, setNote
   // Overview
   const weeksColor = T.primary;
   return (
-    <div className="scr" style={{ padding: "16px 14px 24px", overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
+    <div key="overview" className={`scr ${pdir === "right" ? "enter-right" : ""}`} style={{ padding: "16px 14px 24px", overflowY: "auto", height: "100%", boxSizing: "border-box" }}>
       {/* Weeks summary */}
       <div style={{ ...card({ marginBottom: 16 }), background: `${weeksColor}12`, border: `1px solid ${weeksColor}35`, display: "flex", alignItems: "center", gap: 14 }}>
         <div style={{ fontSize: 38, fontWeight: 900, color: weeksColor, lineHeight: 1 }}>{totalWeeks}</div>

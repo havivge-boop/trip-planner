@@ -16,74 +16,69 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;700;800;900&display=swap" rel="stylesheet" />
     <style>
-      #splash { position: fixed; inset: 0; z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+      #splash { position: fixed; inset: 0; z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center;
         background: radial-gradient(60vmax 60vmax at 110% -10%, rgba(124,92,255,.28), transparent 60%), radial-gradient(50vmax 50vmax at -20% 30%, rgba(34,195,230,.16), transparent 60%), #070a12;
-        font-family: 'Heebo', system-ui, sans-serif; direction: rtl; transition: opacity .45s ease; }
+        font-family: 'Heebo', system-ui, sans-serif; direction: rtl; transition: opacity .5s ease; }
       #splash.hide { opacity: 0; pointer-events: none; }
-      #splash .title { font-size: 34px; font-weight: 900; margin-top: 18px; background: linear-gradient(135deg,#a48bff,#5b8cff 55%,#22c3e6); -webkit-background-clip: text; background-clip: text; color: transparent; animation: sp-up .7s .15s cubic-bezier(.2,.8,.2,1) both; }
-      #splash .year { font-size: 18px; font-weight: 700; letter-spacing: 6px; color: #c7d4ff; opacity: .85; animation: sp-up .7s .3s cubic-bezier(.2,.8,.2,1) both; }
-      #splash .bar { width: 200px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: 34px; direction: ltr; }
+      #splash .sp-globe { animation: sp-pop .9s cubic-bezier(.2,.8,.2,1) both; filter: drop-shadow(0 10px 30px rgba(43,140,240,.35)); }
+      #splash .title { font-size: 36px; font-weight: 900; margin-top: 14px; display: flex; }
+      #splash .title span { display: inline-block; white-space: pre; background: linear-gradient(135deg,#a48bff,#5b8cff 55%,#22c3e6); -webkit-background-clip: text; background-clip: text; color: transparent;
+        opacity: 0; animation: sp-letter .6s cubic-bezier(.2,.8,.2,1) forwards; }
+      #splash .year { font-size: 18px; font-weight: 800; color: #c7d4ff; opacity: 0; animation: sp-year .9s 1.2s cubic-bezier(.2,.8,.2,1) forwards; }
+      #splash .loader { margin-top: 34px; display: flex; flex-direction: column; align-items: center; opacity: 0; animation: sp-fade .5s 1.55s ease forwards; }
+      #splash .bar { width: 200px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; direction: ltr; }
       #splash .fill { height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg,#7c5cff,#5b8cff,#22c3e6); box-shadow: 0 0 12px rgba(91,140,255,.7); }
-      #splash .pct { font-size: 12px; color: #8b95ab; margin-top: 6px; font-variant-numeric: tabular-nums; }
-      #splash .globe-spin { animation: sp-pop .8s cubic-bezier(.2,.8,.2,1) both; }
-      @keyframes sp-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-      @keyframes sp-pop { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: none; } }
+      #splash .pct { font-size: 12px; color: #8b95ab; margin-top: 7px; font-variant-numeric: tabular-nums; direction: ltr; }
+      @keyframes sp-pop { from { opacity: 0; transform: scale(.7) rotate(-8deg); } to { opacity: 1; transform: none; } }
+      @keyframes sp-letter { from { opacity: 0; transform: translateY(16px) scale(.9); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+      @keyframes sp-year { from { opacity: 0; letter-spacing: 22px; } to { opacity: .9; letter-spacing: 7px; } }
+      @keyframes sp-fade { to { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { #splash * { animation-duration: .01s !important; animation-delay: 0s !important; } }
     </style>
     <title>הטיול הגדול</title>
   </head>
   <body style="margin:0;background:#070a12">
     <div id="splash">
-      <svg class="globe-spin" width="260" height="220" viewBox="-150 -125 300 250" aria-hidden="true">
-        <defs>
-          <radialGradient id="sg" cx=".36" cy=".3" r=".85"><stop offset="0" stop-color="#ffffff"/><stop offset=".55" stop-color="#dfe8ff"/><stop offset="1" stop-color="#9fb6ff"/></radialGradient>
-          <clipPath id="sc"><circle r="92"/></clipPath>
-        </defs>
-        <!-- orbit + plane behind the globe -->
-        <g transform="rotate(-16)">
-          <ellipse rx="128" ry="42" fill="none" stroke="#7f9cff" stroke-opacity=".35" stroke-width="2.5" stroke-dasharray="1 9" stroke-linecap="round"/>
-          <g opacity="0"><g transform="scale(1.2)"><path fill="#fff" transform="rotate(90) translate(-12 -12)" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></g>
-            <animateMotion dur="3.2s" repeatCount="indefinite" rotate="auto" path="M128,0 A128,42 0 1,1 -128,0 A128,42 0 1,1 128,0"/>
-            <animate attributeName="opacity" dur="3.2s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;.5" values="0;.55"/>
-          </g>
-        </g>
-        <!-- globe -->
-        <circle r="92" fill="url(#sg)"/>
-        <g clip-path="url(#sc)" fill="none" stroke="#5b8cff" stroke-opacity=".5" stroke-width="3.5">
-          <ellipse rx="92" ry="30"/><line x1="-92" x2="92"/><ellipse rx="92" ry="66"/>
-          <ellipse ry="92" rx="20"><animate attributeName="rx" dur="4s" repeatCount="indefinite" values="0;92;0" keyTimes="0;.5;1"/></ellipse>
-          <ellipse ry="92" rx="70"><animate attributeName="rx" dur="4s" repeatCount="indefinite" values="70;0;70" keyTimes="0;.5;1"/></ellipse>
-          <line y1="-92" y2="92"/>
-        </g>
-        <!-- front half of the orbit + plane in front of the globe -->
-        <g transform="rotate(-16)">
-          <path d="M128,0 A128,42 0 0,1 -128,0" fill="none" stroke="#ffffff" stroke-opacity=".75" stroke-width="2.5" stroke-dasharray="1 9" stroke-linecap="round"/>
-          <g><g transform="scale(1.6)"><path fill="#fff" transform="rotate(90) translate(-12 -12)" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></g>
-            <animateMotion dur="3.2s" repeatCount="indefinite" rotate="auto" path="M128,0 A128,42 0 1,1 -128,0 A128,42 0 1,1 128,0"/>
-            <animate attributeName="opacity" dur="3.2s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;.5" values="1;0"/>
-          </g>
-        </g>
-      </svg>
-      <div class="title">הטיול הגדול</div>
+      <svg class="sp-globe" width="270" height="230" viewBox="-250 -215 500 430" aria-hidden="true"><defs><radialGradient id="Soc" cx=".38" cy=".32" r=".75"><stop offset="0" stop-color="#6fd6ff"/><stop offset=".5" stop-color="#2b8cf0"/><stop offset="1" stop-color="#0d3f9e"/></radialGradient>
+<linearGradient id="Sld" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7fe08a"/><stop offset=".6" stop-color="#3cbf5c"/><stop offset="1" stop-color="#2a9a62"/></linearGradient>
+<radialGradient id="Ssh" cx=".36" cy=".3" r=".78"><stop offset=".45" stop-color="#000" stop-opacity="0"/><stop offset=".85" stop-color="#020a2a" stop-opacity=".45"/><stop offset="1" stop-color="#020a2a" stop-opacity=".75"/></radialGradient>
+<radialGradient id="Shl" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#fff" stop-opacity=".75"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+<radialGradient id="Sat" cx=".5" cy=".5" r=".5"><stop offset=".84" stop-color="#3fb4ff" stop-opacity=".55"/><stop offset="1" stop-color="#3fb4ff" stop-opacity="0"/></radialGradient>
+<clipPath id="Scl"><circle r="150"/></clipPath></defs>
+<g transform="rotate(-16)"><ellipse rx="215" ry="70" fill="none" stroke="#7f9cff" stroke-opacity=".35" stroke-width="4" stroke-dasharray="1 15" stroke-linecap="round"/>
+<g opacity="0"><g transform="scale(2)"><path fill="#fff" transform="rotate(90) translate(-12 -12)" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></g><animateMotion dur="3.4s" repeatCount="indefinite" rotate="auto" path="M215,0 A215,70 0 1,1 -215,0 A215,70 0 1,1 215,0"/><animate attributeName="opacity" dur="3.4s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;.5" values="0;.5"/></g></g>
+<circle r="172" fill="url(#Sat)"/>
+<circle r="150" fill="url(#Soc)"/>
+<g clip-path="url(#Scl)"><g transform="translate(-300 0)"><animateTransform attributeName="transform" type="translate" from="-300 0" to="300 0" dur="14s" repeatCount="indefinite"/><g transform="translate(-600 0)"><g fill="url(#Sld)"><path d="M40 -110C80 -140 150 -130 170 -100C165 -70 140 -50 120 -30C110 -15 95 -10 90 0C80 -20 60 -40 50 -60C40 -80 35 -95 40 -110Z"/><path d="M100 10C125 5 150 20 150 45C148 75 130 100 118 135C110 140 105 130 104 115C100 85 90 55 92 35C93 22 95 14 100 10Z"/><path d="M170 -145C190 -150 215 -140 210 -125C200 -115 180 -118 172 -128Z"/><path d="M268 -95C285 -110 320 -112 345 -100C355 -88 345 -75 330 -72C318 -66 305 -58 290 -62C278 -64 268 -72 264 -82Z"/><path d="M300 -110C305 -135 330 -145 342 -128C340 -115 325 -108 312 -108Z"/><path d="M262 -100C258 -112 266 -120 272 -112C274 -104 268 -98 262 -100Z"/><path d="M262 -48C290 -58 335 -55 355 -38C368 -22 362 8 352 30C340 60 330 85 312 118C305 126 296 122 294 110C288 80 278 55 268 35C255 10 245 -20 262 -48Z"/><path d="M364 70C370 64 376 72 373 84C370 92 362 90 362 82Z"/><path d="M350 -100C400 -130 480 -135 540 -115C565 -100 560 -70 535 -55C515 -45 505 -20 480 -15C460 -12 445 -25 425 -20C410 -16 395 -35 380 -45C365 -55 352 -70 350 -100Z"/><path d="M420 -20C432 -18 445 -8 440 10C435 25 428 30 425 20C420 5 412 -10 420 -20Z"/><path d="M365 -45C380 -45 398 -35 395 -20C390 -8 378 -5 370 -15C364 -25 360 -38 365 -45Z"/><path d="M500 50C520 40 555 45 565 60C570 80 550 92 530 88C512 85 495 75 500 50Z"/></g></g><g transform="translate(0 0)"><g fill="url(#Sld)"><path d="M40 -110C80 -140 150 -130 170 -100C165 -70 140 -50 120 -30C110 -15 95 -10 90 0C80 -20 60 -40 50 -60C40 -80 35 -95 40 -110Z"/><path d="M100 10C125 5 150 20 150 45C148 75 130 100 118 135C110 140 105 130 104 115C100 85 90 55 92 35C93 22 95 14 100 10Z"/><path d="M170 -145C190 -150 215 -140 210 -125C200 -115 180 -118 172 -128Z"/><path d="M268 -95C285 -110 320 -112 345 -100C355 -88 345 -75 330 -72C318 -66 305 -58 290 -62C278 -64 268 -72 264 -82Z"/><path d="M300 -110C305 -135 330 -145 342 -128C340 -115 325 -108 312 -108Z"/><path d="M262 -100C258 -112 266 -120 272 -112C274 -104 268 -98 262 -100Z"/><path d="M262 -48C290 -58 335 -55 355 -38C368 -22 362 8 352 30C340 60 330 85 312 118C305 126 296 122 294 110C288 80 278 55 268 35C255 10 245 -20 262 -48Z"/><path d="M364 70C370 64 376 72 373 84C370 92 362 90 362 82Z"/><path d="M350 -100C400 -130 480 -135 540 -115C565 -100 560 -70 535 -55C515 -45 505 -20 480 -15C460 -12 445 -25 425 -20C410 -16 395 -35 380 -45C365 -55 352 -70 350 -100Z"/><path d="M420 -20C432 -18 445 -8 440 10C435 25 428 30 425 20C420 5 412 -10 420 -20Z"/><path d="M365 -45C380 -45 398 -35 395 -20C390 -8 378 -5 370 -15C364 -25 360 -38 365 -45Z"/><path d="M500 50C520 40 555 45 565 60C570 80 550 92 530 88C512 85 495 75 500 50Z"/></g></g><g transform="translate(600 0)"><g fill="url(#Sld)"><path d="M40 -110C80 -140 150 -130 170 -100C165 -70 140 -50 120 -30C110 -15 95 -10 90 0C80 -20 60 -40 50 -60C40 -80 35 -95 40 -110Z"/><path d="M100 10C125 5 150 20 150 45C148 75 130 100 118 135C110 140 105 130 104 115C100 85 90 55 92 35C93 22 95 14 100 10Z"/><path d="M170 -145C190 -150 215 -140 210 -125C200 -115 180 -118 172 -128Z"/><path d="M268 -95C285 -110 320 -112 345 -100C355 -88 345 -75 330 -72C318 -66 305 -58 290 -62C278 -64 268 -72 264 -82Z"/><path d="M300 -110C305 -135 330 -145 342 -128C340 -115 325 -108 312 -108Z"/><path d="M262 -100C258 -112 266 -120 272 -112C274 -104 268 -98 262 -100Z"/><path d="M262 -48C290 -58 335 -55 355 -38C368 -22 362 8 352 30C340 60 330 85 312 118C305 126 296 122 294 110C288 80 278 55 268 35C255 10 245 -20 262 -48Z"/><path d="M364 70C370 64 376 72 373 84C370 92 362 90 362 82Z"/><path d="M350 -100C400 -130 480 -135 540 -115C565 -100 560 -70 535 -55C515 -45 505 -20 480 -15C460 -12 445 -25 425 -20C410 -16 395 -35 380 -45C365 -55 352 -70 350 -100Z"/><path d="M420 -20C432 -18 445 -8 440 10C435 25 428 30 425 20C420 5 412 -10 420 -20Z"/><path d="M365 -45C380 -45 398 -35 395 -20C390 -8 378 -5 370 -15C364 -25 360 -38 365 -45Z"/><path d="M500 50C520 40 555 45 565 60C570 80 550 92 530 88C512 85 495 75 500 50Z"/></g></g></g></g>
+<circle r="150" fill="url(#Ssh)"/>
+<ellipse cx="-58" cy="-70" rx="62" ry="42" fill="url(#Shl)" transform="rotate(-30 -58 -70)" opacity=".55"/>
+<g transform="rotate(-16)"><path d="M215,0 A215,70 0 0,1 -215,0" fill="none" stroke="#fff" stroke-opacity=".8" stroke-width="4" stroke-dasharray="1 15" stroke-linecap="round"/>
+<g><g transform="scale(2.6)"><path fill="#fff" transform="rotate(90) translate(-12 -12)" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></g><animateMotion dur="3.4s" repeatCount="indefinite" rotate="auto" path="M215,0 A215,70 0 1,1 -215,0 A215,70 0 1,1 215,0"/><animate attributeName="opacity" dur="3.4s" repeatCount="indefinite" calcMode="discrete" keyTimes="0;.5" values="1;0"/></g></g>
+</svg>
+      <div class="title"><span style="animation-delay:0.65s">ה</span><span style="animation-delay:0.71s">ט</span><span style="animation-delay:0.77s">י</span><span style="animation-delay:0.83s">ו</span><span style="animation-delay:0.89s">ל</span><span style="animation-delay:0.95s"> </span><span style="animation-delay:1.01s">ה</span><span style="animation-delay:1.07s">ג</span><span style="animation-delay:1.13s">ד</span><span style="animation-delay:1.19s">ו</span><span style="animation-delay:1.25s">ל</span></div>
       <div class="year">2027</div>
-      <div class="bar"><div class="fill" id="splash-fill"></div></div>
-      <div class="pct" id="splash-pct">0%</div>
+      <div class="loader"><div class="bar"><div class="fill" id="splash-fill"></div></div><div class="pct" id="splash-pct">0%</div></div>
     </div>
     <script>
+      // Loading screen: globe → title → year → progress bar that always runs all the way to 100%.
       (function () {
         var s = document.getElementById("splash"), fill = document.getElementById("splash-fill"), pct = document.getElementById("splash-pct");
-        var p = 0, done = false, start = Date.now(), MIN = 1800;
+        var start = Date.now(), BAR_AT = 1600, BAR_TIME = 1100, ready = false, p = 0, closing = false;
         function draw() { fill.style.width = p.toFixed(1) + "%"; pct.textContent = Math.round(p) + "%"; }
-        var iv = setInterval(function () { if (!done) { p += (90 - p) * 0.045; draw(); } }, 50);
-        window.__appReady = function () {
-          if (done) return; done = true;
-          var from = p, t0 = Date.now(), dur = Math.max(450, MIN - (t0 - start));
-          var iv2 = setInterval(function () {
-            var k = Math.min(1, (Date.now() - t0) / dur);
-            p = from + (100 - from) * (1 - Math.pow(1 - k, 2)); draw();
-            if (k >= 1) { clearInterval(iv2); clearInterval(iv); s.classList.add("hide"); setTimeout(function () { s.remove(); }, 500); }
-          }, 30);
-        };
-        setTimeout(function () { window.__appReady(); }, 12000); // never get stuck
+        var iv = setInterval(function () {
+          var t = Date.now() - start - BAR_AT;
+          if (t < 0) return;
+          var goal = Math.min(100, (t / BAR_TIME) * 100), cap = ready ? 100 : 90;
+          p += (Math.min(goal, cap) - p) * 0.22;
+          if (ready && goal >= 100 && p > 99.5) p = 100;
+          draw();
+          if (p === 100 && !closing) {
+            closing = true; clearInterval(iv);
+            setTimeout(function () { s.classList.add("hide"); setTimeout(function () { s.remove(); }, 550); }, 350);
+          }
+        }, 40);
+        window.__appReady = function () { ready = true; };
+        setTimeout(function () { ready = true; }, 12000); // never get stuck
       })();
     </script>
     <div id="root"></div>
