@@ -24,6 +24,7 @@ async function ensureFirebase() {
   const auth = authMod.getAuth(app);
   await authMod.setPersistence(auth, authMod.browserLocalPersistence).catch(() => {});
   const db = fs.initializeFirestore(app, { ignoreUndefinedProperties: true });
+  authMod.getRedirectResult(auth).catch(() => {}); // finish a redirect sign-in, if one is in progress
   fb = { auth, db, fs, authMod };
   return fb;
 }
@@ -38,7 +39,13 @@ export async function signIn() {
   const { auth, authMod } = await ensureFirebase();
   const provider = new authMod.GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-  return authMod.signInWithPopup(auth, provider);
+  try {
+    return await authMod.signInWithPopup(auth, provider);
+  } catch (e) {
+    // Home-screen app on iPhone sometimes can't open a popup – fall back to a full-page redirect.
+    if (/popup-blocked|operation-not-supported|web-storage-unsupported/.test(String(e?.code))) return authMod.signInWithRedirect(auth, provider);
+    throw e;
+  }
 }
 export async function signOutUser() {
   const { auth, authMod } = await ensureFirebase();
