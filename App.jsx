@@ -1125,7 +1125,7 @@ function ReceiptsFolder({ expenses, onClose, onOpen }) {
             ))}
           </div>
           <button onClick={saveAll} disabled={busy} style={primaryBtn({ opacity: busy ? 0.6 : 1 })}>{busy ? "מכין…" : `⬇️ שמור את כל הקבלות בטלפון`}</button>
-          <div style={{ fontSize: 12, color: T.muted, textAlign: "center", marginTop: 8 }}>באייפון ייפתח חלון שיתוף: אפשר לבחור "שמור תמונות" או "שמור בקבצים"</div>
+          <div style={{ fontSize: 12, color: T.muted, textAlign: "center", marginTop: 8 }}>בטלפון ייפתח חלון שיתוף: אפשר לשמור לגלריה, לקבצים או לגוגל דרייב</div>
         </>
       )}
     </Sheet>
